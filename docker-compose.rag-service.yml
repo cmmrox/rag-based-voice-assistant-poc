@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+    networks:
+      - voice-assistant-network
+
+  rag-service:
+    build: ./rag-service
+    container_name: voice-assistant-rag-service
+    ports:
+      - "8001:8000"
+    environment:
+      - CHROMADB_HOST=chromadb
+      - CHROMADB_PORT=8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - chromadb
+    volumes:
+      - ./rag-service:/app
+    networks:
+      - voice-assistant-network
+
+volumes:
+  chroma_data:
+
+networks:
+  voice-assistant-network:
+    driver: bridge
+

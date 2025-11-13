@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: voice-assistant-backend
+    ports:
+      - "8002:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - RAG_SERVICE_URL=http://rag-service:8000
+      - BACKEND_PORT=8000
+    volumes:
+      - ./backend:/app
+    networks:
+      - voice-assistant-network
+    # Note: Ensure rag-service is running separately or use docker-compose.full.yml
+
+networks:
+  voice-assistant-network:
+    driver: bridge
+    external: true
+
