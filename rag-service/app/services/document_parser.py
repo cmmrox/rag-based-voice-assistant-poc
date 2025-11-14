@@ -1,10 +1,14 @@
 import logging
 import io
+import re
 from typing import List, Tuple
-from pypdf2 import PdfReader
+from PyPDF2 import PdfReader
 import markdown
 
 logger = logging.getLogger(__name__)
+
+# Approximate token estimation: ~4 characters per token for English text
+CHARS_PER_TOKEN = 4
 
 
 class DocumentParser:
@@ -16,12 +20,20 @@ class DocumentParser:
         try:
             pdf_file = io.BytesIO(file_content)
             reader = PdfReader(pdf_file)
+            total_pages = len(reader.pages)
+            logger.info(f"Parsing PDF with {total_pages} pages...")
+            
             text = ""
+            for page_num, page in enumerate(reader.pages, 1):
+                page_text = page.extract_text()
+                text += page_text + "\n"
+                
+                # Log progress every 10 pages or on last page
+                if page_num % 10 == 0 or page_num == total_pages:
+                    logger.info(f"Processed {page_num}/{total_pages} pages "
+                              f"({len(text)} characters extracted)")
             
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-            
-            logger.info(f"Parsed PDF: {len(text)} characters")
+            logger.info(f"Successfully parsed PDF: {len(text)} characters, {total_pages} pages")
             return text
         
         except Exception as e:
@@ -77,35 +89,126 @@ class DocumentParser:
             raise ValueError(f"Unsupported file type: {filename}")
     
     @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate token count (approximate: ~4 chars per token)"""
+        return len(text) // CHARS_PER_TOKEN
+    
+    @staticmethod
+    def _split_into_sentences(text: str) -> List[str]:
+        """Split text into sentences using regex"""
+        # Pattern to match sentence endings (. ! ?) followed by whitespace or end of string
+        # Handles common abbreviations and decimal numbers
+        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])(?=\n\n)|(?<=[.!?])(?=\Z)'
+        sentences = re.split(sentence_pattern, text)
+        
+        # Filter out empty sentences and clean up
+        sentences = [s.strip() for s in sentences if s.strip()]
+        return sentences
+    
+    @staticmethod
     def chunk_text(
         text: str,
         chunk_size: int = 500,
         overlap: int = 100
     ) -> List[Tuple[str, int]]:
-        """Chunk text into smaller pieces with overlap"""
-        # Simple token-based chunking (approximate)
-        # In production, use a proper tokenizer
-        words = text.split()
-        chunks = []
+        """
+        Chunk text into smaller pieces with overlap, respecting sentence boundaries.
         
-        if len(words) <= chunk_size:
+        Args:
+            text: Text to chunk
+            chunk_size: Target chunk size in tokens (approximate)
+            overlap: Overlap size in tokens (approximate)
+        
+        Returns:
+            List of tuples (chunk_text, chunk_id)
+        """
+        # Clean and normalize text
+        text = re.sub(r'\s+', ' ', text.strip())
+        
+        if not text:
+            logger.warning("Empty text provided for chunking")
+            return []
+        
+        # Estimate total tokens
+        total_tokens = DocumentParser._estimate_tokens(text)
+        logger.info(f"Chunking text: {len(text)} characters, ~{total_tokens} tokens "
+                   f"(target chunk size: {chunk_size} tokens, overlap: {overlap} tokens)")
+        
+        # If text is smaller than chunk size, return as single chunk
+        if total_tokens <= chunk_size:
+            logger.info("Text fits in single chunk, no chunking needed")
             return [(text, 0)]
         
-        start = 0
+        # Split into sentences for sentence-aware chunking
+        sentences = DocumentParser._split_into_sentences(text)
+        logger.info(f"Split text into {len(sentences)} sentences")
+        
+        chunks = []
         chunk_id = 0
+        current_chunk_sentences = []
+        current_chunk_tokens = 0
         
-        while start < len(words):
-            end = min(start + chunk_size, len(words))
-            chunk_words = words[start:end]
-            chunk_text = " ".join(chunk_words)
+        i = 0
+        while i < len(sentences):
+            sentence = sentences[i]
+            sentence_tokens = DocumentParser._estimate_tokens(sentence)
             
+            # If adding this sentence would exceed chunk size, finalize current chunk
+            if current_chunk_tokens + sentence_tokens > chunk_size and current_chunk_sentences:
+                # Create chunk from accumulated sentences
+                chunk_text = " ".join(current_chunk_sentences)
+                chunks.append((chunk_text, chunk_id))
+                logger.debug(f"Created chunk {chunk_id}: ~{current_chunk_tokens} tokens, "
+                           f"{len(current_chunk_sentences)} sentences")
+                
+                chunk_id += 1
+                
+                # Start new chunk with overlap
+                # Go back to include overlap sentences
+                overlap_tokens = 0
+                overlap_sentences = []
+                j = len(current_chunk_sentences) - 1
+                
+                while j >= 0 and overlap_tokens < overlap:
+                    prev_sentence = current_chunk_sentences[j]
+                    prev_tokens = DocumentParser._estimate_tokens(prev_sentence)
+                    if overlap_tokens + prev_tokens <= overlap:
+                        overlap_sentences.insert(0, prev_sentence)
+                        overlap_tokens += prev_tokens
+                        j -= 1
+                    else:
+                        break
+                
+                current_chunk_sentences = overlap_sentences
+                current_chunk_tokens = overlap_tokens
+                
+                # Don't increment i, process current sentence again
+                continue
+            
+            # Add sentence to current chunk
+            current_chunk_sentences.append(sentence)
+            current_chunk_tokens += sentence_tokens
+            i += 1
+        
+        # Add final chunk if there are remaining sentences
+        if current_chunk_sentences:
+            chunk_text = " ".join(current_chunk_sentences)
             chunks.append((chunk_text, chunk_id))
-            
-            # Move start forward with overlap
-            start = end - overlap
-            chunk_id += 1
+            logger.debug(f"Created final chunk {chunk_id}: ~{current_chunk_tokens} tokens, "
+                       f"{len(current_chunk_sentences)} sentences")
         
-        logger.info(f"Chunked text into {len(chunks)} chunks")
+        # Log chunk statistics
+        if chunks:
+            chunk_sizes = [DocumentParser._estimate_tokens(chunk[0]) for chunk in chunks]
+            avg_size = sum(chunk_sizes) / len(chunk_sizes)
+            min_size = min(chunk_sizes)
+            max_size = max(chunk_sizes)
+            
+            logger.info(f"Successfully chunked text into {len(chunks)} chunks: "
+                       f"avg ~{avg_size:.0f} tokens, "
+                       f"min ~{min_size} tokens, "
+                       f"max ~{max_size} tokens")
+        
         return chunks
 
 

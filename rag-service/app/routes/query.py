@@ -23,8 +23,8 @@ async def process_query(request: QueryRequest):
         # Generate query embedding
         query_embedding = await embedding_service.generate_embedding(query)
         
-        # Search ChromaDB
-        results = chromadb_service.query(
+        # Search ChromaDB (now async)
+        results = await chromadb_service.query(
             query_embeddings=[query_embedding],
             n_results=5
         )

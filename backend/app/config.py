@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     
     # Server Configuration
-    backend_port: int = int(os.getenv("BACKEND_PORT", "8000"))
+    # Default to 8002 for local development (8000 is used by ChromaDB)
+    backend_port: int = int(os.getenv("BACKEND_PORT", "8002"))
     
     # RAG Service Configuration
     rag_service_url: str = os.getenv("RAG_SERVICE_URL", "http://rag-service:8000")

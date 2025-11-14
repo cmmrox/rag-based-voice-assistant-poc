@@ -9,8 +9,7 @@ class Session:
     def __init__(self, session_id: Optional[str] = None):
         self.session_id = session_id or str(uuid.uuid4())
         self.created_at = datetime.now()
-        self.peer_connection = None
-        self.websocket = None
+        self.websocket = None  # Optional: for WebSocket-based features (not WebRTC)
         self.status = "idle"  # idle, connecting, connected, error
         self.transcript = []
         

@@ -47,6 +47,53 @@ class RAGClient:
             return result["context"]
         
         return ""
+    
+    async def check_health(self) -> dict:
+        """Check RAG service health and connectivity"""
+        try:
+            url = f"{self.base_url}/health"
+            health_timeout = 5.0  # Shorter timeout for health checks
+            
+            async with httpx.AsyncClient(timeout=health_timeout) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                result = response.json()
+                
+                logger.info(f"RAG service health check successful: {result}")
+                return {
+                    "status": "connected",
+                    "url": self.base_url,
+                    "details": result
+                }
+        
+        except httpx.TimeoutException:
+            logger.warning(f"RAG service health check timeout: {self.base_url}")
+            return {
+                "status": "unavailable",
+                "url": self.base_url,
+                "details": {"error": "Connection timeout"}
+            }
+        except httpx.ConnectError:
+            logger.warning(f"RAG service health check connection error: {self.base_url}")
+            return {
+                "status": "unavailable",
+                "url": self.base_url,
+                "details": {"error": "Connection refused"}
+            }
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"RAG service health check HTTP error: {e.response.status_code}")
+            return {
+                "status": "error",
+                "url": self.base_url,
+                "details": {"error": f"HTTP {e.response.status_code}"}
+            }
+        except Exception as e:
+            logger.error(f"RAG service health check error: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "url": self.base_url,
+                "details": {"error": str(e)[:100]}
+            }
 
 
 # Global RAG client instance

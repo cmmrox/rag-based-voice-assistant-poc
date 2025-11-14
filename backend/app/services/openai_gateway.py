@@ -201,6 +201,74 @@ If the context doesn't contain relevant information, say so. Be concise and natu
         
         except Exception as e:
             logger.error(f"Error closing OpenAI session: {e}", exc_info=True)
+    
+    async def check_health(self) -> dict:
+        """Check OpenAI API connectivity and configuration"""
+        api_key_configured = bool(settings.openai_api_key and settings.openai_api_key.strip())
+        
+        if not api_key_configured:
+            logger.warning("OpenAI API key not configured")
+            return {
+                "status": "error",
+                "api_key_configured": False,
+                "details": {"error": "API key not configured"}
+            }
+        
+        try:
+            # Make a lightweight API call to verify connectivity
+            # Using models.list() as it's a simple, fast endpoint
+            loop = asyncio.get_event_loop()
+            
+            # Run the synchronous OpenAI call in a thread pool to avoid blocking
+            # Just iterate once to verify API is accessible without fetching all models
+            def check_openai():
+                models_iter = self.client.models.list()
+                # Just try to get the first model to verify connectivity
+                try:
+                    first_model = next(iter(models_iter))
+                    return first_model is not None
+                except StopIteration:
+                    # Empty iterator but API is accessible
+                    return True
+            
+            models_available = await loop.run_in_executor(None, check_openai)
+            
+            logger.info("OpenAI API health check successful")
+            return {
+                "status": "connected",
+                "api_key_configured": True,
+                "details": {"message": "API accessible", "models_available": models_available}
+            }
+        
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            
+            # Check for authentication errors
+            if "authentication" in error_msg.lower() or "401" in error_msg or "unauthorized" in error_msg.lower():
+                logger.warning(f"OpenAI API authentication error: {error_msg}")
+                return {
+                    "status": "error",
+                    "api_key_configured": True,
+                    "details": {"error": "Authentication failed - invalid API key"}
+                }
+            
+            # Check for network errors
+            if "connection" in error_msg.lower() or "timeout" in error_msg.lower() or "network" in error_msg.lower():
+                logger.warning(f"OpenAI API connection error: {error_msg}")
+                return {
+                    "status": "unavailable",
+                    "api_key_configured": True,
+                    "details": {"error": f"Connection error: {error_type}"}
+                }
+            
+            # Other errors
+            logger.error(f"OpenAI API health check error: {error_msg}", exc_info=True)
+            return {
+                "status": "error",
+                "api_key_configured": True,
+                "details": {"error": f"{error_type}: {error_msg[:100]}"}
+            }
 
 
 # Global OpenAI gateway instance

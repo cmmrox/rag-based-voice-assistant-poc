@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { WebSocketClient, WebSocketMessage } from '@/lib/websocket';
 
 export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'listening' | 'processing' | 'speaking' | 'error';
 
@@ -18,7 +17,7 @@ export function useVoiceSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const websocketRef = useRef<WebSocketClient | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
 
@@ -27,7 +26,7 @@ export function useVoiceSession() {
       setStatus('connecting');
       setError(null);
 
-      // Get user media
+      // Get user media (microphone)
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -37,40 +36,67 @@ export function useVoiceSession() {
       });
       localStreamRef.current = stream;
 
-      // Create peer connection
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      });
+      // Create peer connection (no STUN servers needed for OpenAI)
+      const pc = new RTCPeerConnection();
+      peerConnectionRef.current = pc;
 
-      // Add audio tracks
-      stream.getTracks().forEach(track => {
-        pc.addTrack(track, stream);
-      });
-
-      // Handle incoming audio
+      // Set up to play remote audio from OpenAI
+      audioElementRef.current = document.createElement("audio");
+      audioElementRef.current.autoplay = true;
       pc.ontrack = (event) => {
         console.log('Received remote track:', event.track.kind);
-        if (event.track.kind === 'audio') {
-          if (!audioElementRef.current) {
-            audioElementRef.current = new Audio();
-          }
+        if (event.track.kind === 'audio' && audioElementRef.current) {
           audioElementRef.current.srcObject = event.streams[0];
           audioElementRef.current.play().catch(console.error);
         }
       };
 
-      // Handle ICE candidates
-      pc.onicecandidate = (event) => {
-        if (event.candidate && websocketRef.current?.isConnected()) {
-          websocketRef.current.send({
-            type: 'ice_candidate',
-            candidate: event.candidate,
-            session_id: sessionId || ''
-          });
+      // Add local audio track for microphone input
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
+
+      // Set up data channel for sending and receiving events
+      const dc = pc.createDataChannel("oai-events");
+      dataChannelRef.current = dc;
+
+      // Listen for server events from OpenAI
+      dc.onmessage = (event) => {
+        try {
+          const eventData = JSON.parse(event.data);
+          console.log('Received event from OpenAI:', eventData);
+          
+          // Handle different event types
+          if (eventData.type === 'conversation.item.input_audio_transcription.completed') {
+            const transcript = eventData.transcript || '';
+            addTranscriptMessage('user', transcript);
+            setStatus('processing');
+          } else if (eventData.type === 'response.audio_transcript.delta') {
+            const delta = eventData.delta || '';
+            if (delta) {
+              addTranscriptMessage('assistant', delta);
+              setStatus('speaking');
+            }
+          } else if (eventData.type === 'response.done') {
+            setStatus('connected');
+          } else if (eventData.type === 'error') {
+            setError(eventData.error?.message || 'Unknown error');
+            setStatus('error');
+          }
+        } catch (err) {
+          console.error('Error parsing event:', err);
         }
+      };
+
+      dc.onopen = () => {
+        console.log('Data channel opened');
+        setStatus('connected');
+      };
+
+      dc.onerror = (err) => {
+        console.error('Data channel error:', err);
+        setError('Data channel error');
+        setStatus('error');
       };
 
       // Handle connection state changes
@@ -84,97 +110,46 @@ export function useVoiceSession() {
         }
       };
 
-      peerConnectionRef.current = pc;
+      // Create offer and send to backend
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-      // Connect WebSocket
-      const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8002';
-      const ws = new WebSocketClient(wsUrl.startsWith('ws://') || wsUrl.startsWith('wss://') 
-        ? `${wsUrl}/ws/signaling` 
-        : `ws://${wsUrl}/ws/signaling`);
-      websocketRef.current = ws;
-
-      await ws.connect();
-
-      // Handle WebSocket messages
-      ws.onMessage((message: WebSocketMessage) => {
-        handleWebSocketMessage(message, pc);
-        
-        // Handle transcription and response messages
-        if (message.type === 'transcription') {
-          const msg = message as any;
-          addTranscriptMessage('user', msg.text);
-          setStatus('processing');
-        } else if (message.type === 'response_text') {
-          const msg = message as any;
-          addTranscriptMessage('assistant', msg.text);
-          setStatus('speaking');
-        }
+      // POST SDP to backend endpoint which forwards to OpenAI
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+      const sdpResponse = await fetch(`${backendUrl}/api/realtime/session`, {
+        method: 'POST',
+        body: offer.sdp,
+        headers: {
+          'Content-Type': 'application/sdp',
+        },
       });
 
-      ws.onError((error) => {
-        console.error('WebSocket error:', error);
-        setError('WebSocket connection error');
-        setStatus('error');
-      });
+      if (!sdpResponse.ok) {
+        const errorData = await sdpResponse.json().catch(() => ({ error: 'Failed to create session' }));
+        throw new Error(errorData.error || 'Failed to create realtime session');
+      }
 
-      ws.onClose(() => {
-        console.log('WebSocket closed');
-        setStatus('idle');
-      });
+      // Get OpenAI's SDP answer
+      const answerSdp = await sdpResponse.text();
+      
+      // Set remote description with OpenAI's answer
+      const answer = {
+        type: 'answer' as RTCSdpType,
+        sdp: answerSdp,
+      };
+      
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
 
-      // Request session
-      ws.send({
-        type: 'session_request'
-      });
+      // Generate a session ID for tracking
+      setSessionId(crypto.randomUUID());
 
     } catch (err) {
       console.error('Error starting session:', err);
       setError(err instanceof Error ? err.message : 'Failed to start session');
       setStatus('error');
-    }
-  }, [sessionId]);
-
-  const handleWebSocketMessage = async (
-    message: WebSocketMessage,
-    pc: RTCPeerConnection
-  ) => {
-    if (message.type === 'offer') {
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription({
-          type: 'offer',
-          sdp: message.sdp
-        }));
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        websocketRef.current?.send({
-          type: 'answer',
-          sdp: answer.sdp,
-          type: answer.type,
-          session_id: message.session_id
-        });
-
-        setSessionId(message.session_id);
-      } catch (error) {
-        console.error('Error handling offer:', error);
-        setError('Failed to handle offer');
-        setStatus('error');
-      }
-    } else if (message.type === 'ice_candidate') {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-      } catch (error) {
-        console.error('Error adding ICE candidate:', error);
-      }
-    } else if (message.type === 'session_ready') {
-      setStatus('connected');
-      setSessionId(message.session_id);
-    } else if (message.type === 'session_ended') {
-      setStatus('idle');
       stopSession();
     }
-  };
+  }, []);
 
   const stopSession = useCallback(() => {
     // Stop local stream
@@ -183,33 +158,37 @@ export function useVoiceSession() {
       localStreamRef.current = null;
     }
 
+    // Close data channel
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close();
+      dataChannelRef.current = null;
+    }
+
     // Close peer connection
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
 
-    // Close WebSocket
-    if (websocketRef.current) {
-      if (sessionId) {
-        websocketRef.current.send({
-          type: 'end_session',
-          session_id: sessionId
-        });
-      }
-      websocketRef.current.close();
-      websocketRef.current = null;
-    }
-
     // Stop audio playback
     if (audioElementRef.current) {
       audioElementRef.current.pause();
+      audioElementRef.current.srcObject = null;
       audioElementRef.current = null;
     }
 
     setStatus('idle');
     setSessionId(null);
-  }, [sessionId]);
+    setError(null);
+  }, []);
+
+  const sendEvent = useCallback((event: object) => {
+    if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
+      dataChannelRef.current.send(JSON.stringify(event));
+    } else {
+      console.warn('Data channel not open, cannot send event');
+    }
+  }, []);
 
   const addTranscriptMessage = useCallback((role: 'user' | 'assistant', text: string) => {
     setTranscript(prev => [...prev, {
@@ -226,7 +205,7 @@ export function useVoiceSession() {
     sessionId,
     startSession,
     stopSession,
+    sendEvent,
     addTranscriptMessage
   };
 }
-
