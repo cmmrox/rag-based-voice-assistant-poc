@@ -20,6 +20,15 @@ export function useVoiceSession() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const websocketRef = useRef<WebSocket | null>(null);
+
+  const addTranscriptMessage = useCallback((role: 'user' | 'assistant', text: string) => {
+    setTranscript(prev => [...prev, {
+      role,
+      text,
+      timestamp: new Date().toISOString()
+    }]);
+  }, []);
 
   const startSession = useCallback(async () => {
     try {
@@ -61,7 +70,7 @@ export function useVoiceSession() {
       dataChannelRef.current = dc;
 
       // Listen for server events from OpenAI
-      dc.onmessage = (event) => {
+      dc.onmessage = async (event) => {
         try {
           const eventData = JSON.parse(event.data);
           console.log('Received event from OpenAI:', eventData);
@@ -71,6 +80,14 @@ export function useVoiceSession() {
             const transcript = eventData.transcript || '';
             addTranscriptMessage('user', transcript);
             setStatus('processing');
+            
+            // Send transcription to backend for RAG query
+            if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
+              websocketRef.current.send(JSON.stringify({
+                type: 'transcription',
+                transcript: transcript
+              }));
+            }
           } else if (eventData.type === 'response.audio_transcript.delta') {
             const delta = eventData.delta || '';
             if (delta) {
@@ -115,7 +132,7 @@ export function useVoiceSession() {
       await pc.setLocalDescription(offer);
 
       // POST SDP to backend endpoint which forwards to OpenAI
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8002';
       const sdpResponse = await fetch(`${backendUrl}/api/realtime/session`, {
         method: 'POST',
         body: offer.sdp,
@@ -141,7 +158,92 @@ export function useVoiceSession() {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
 
       // Generate a session ID for tracking
-      setSessionId(crypto.randomUUID());
+      const newSessionId = crypto.randomUUID();
+      setSessionId(newSessionId);
+
+      // Connect to backend WebSocket for RAG integration
+      const wsProtocol = backendUrl.startsWith('https') ? 'wss' : 'ws';
+      const wsUrl = backendUrl.replace(/^https?/, wsProtocol);
+      const ws = new WebSocket(`${wsUrl}/api/ws/events/${newSessionId}`);
+      
+      ws.onopen = () => {
+        console.log('WebSocket connected for RAG integration');
+      };
+      
+      ws.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          console.log('Received message from backend:', message);
+          
+          if (message.type === 'rag_context') {
+            const context = message.context;
+            const query = message.query;
+            
+            if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
+              // Inject context into OpenAI session via data channel
+              // Update session instructions with context
+              const baseInstructions = `You are a helpful voice assistant. Be concise and natural in your responses.`;
+              
+              let instructions = baseInstructions;
+              if (context && context.trim()) {
+                instructions = `${baseInstructions}
+
+Use the following context to answer questions accurately:
+${context}
+
+If the context doesn't contain relevant information, say so.`;
+              }
+              
+              // Update session instructions
+              const sessionUpdate = {
+                type: 'session.update',
+                session: {
+                  instructions: instructions
+                }
+              };
+              
+              dataChannelRef.current.send(JSON.stringify(sessionUpdate));
+              
+              // Send the query as a text message to trigger response with updated context
+              // Note: OpenAI may have already started generating, but this ensures context is available
+              const userMessage = {
+                type: 'conversation.item.create',
+                item: {
+                  type: 'message',
+                  role: 'user',
+                  content: query
+                }
+              };
+              
+              // Small delay to ensure session update is processed before sending message
+              setTimeout(() => {
+                if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
+                  dataChannelRef.current.send(JSON.stringify(userMessage));
+                  console.log('Injected RAG context and sent user message to OpenAI');
+                }
+              }, 200);
+            }
+          } else if (message.type === 'rag_error') {
+            console.error('RAG service error:', message.error);
+            // Continue without context - OpenAI will still respond
+          } else if (message.type === 'error') {
+            console.error('Backend error:', message.error);
+          }
+        } catch (err) {
+          console.error('Error processing WebSocket message:', err);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        // Don't fail the session if WebSocket fails - RAG is optional
+      };
+      
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+      };
+      
+      websocketRef.current = ws;
 
     } catch (err) {
       console.error('Error starting session:', err);
@@ -152,6 +254,12 @@ export function useVoiceSession() {
   }, []);
 
   const stopSession = useCallback(() => {
+    // Close WebSocket connection
+    if (websocketRef.current) {
+      websocketRef.current.close();
+      websocketRef.current = null;
+    }
+
     // Stop local stream
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach(track => track.stop());
@@ -188,14 +296,6 @@ export function useVoiceSession() {
     } else {
       console.warn('Data channel not open, cannot send event');
     }
-  }, []);
-
-  const addTranscriptMessage = useCallback((role: 'user' | 'assistant', text: string) => {
-    setTranscript(prev => [...prev, {
-      role,
-      text,
-      timestamp: new Date().toISOString()
-    }]);
   }, []);
 
   return {

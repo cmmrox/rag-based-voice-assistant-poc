@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes.realtime import router as realtime_router
+from app.routes.events import router as events_router
 from app.services.rag_client import rag_client
 from app.services.openai_gateway import openai_gateway
 
@@ -29,6 +30,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(realtime_router, prefix="/api", tags=["realtime"])
+app.include_router(events_router, prefix="/api", tags=["events"])
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
