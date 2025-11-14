@@ -80,15 +80,52 @@ export function useVoiceSession() {
             const transcript = eventData.transcript || '';
             addTranscriptMessage('user', transcript);
             setStatus('processing');
-            
-            // Send transcription to backend for RAG query
-            if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
-              websocketRef.current.send(JSON.stringify({
-                type: 'transcription',
-                transcript: transcript
-              }));
+            // Note: With function calling, RAG queries are handled via function calls
+            // No need to manually trigger RAG query here
+          } 
+          // Handle function call events
+          else if (eventData.type === 'conversation.item.completed') {
+            const item = eventData.item;
+            if (item && item.type === 'function_call') {
+              console.log('Function call completed:', item);
+              setStatus('processing');
+              
+              // Parse function arguments (they might come as a string)
+              let functionArgs = {};
+              try {
+                if (typeof item.arguments === 'string') {
+                  functionArgs = JSON.parse(item.arguments);
+                } else if (item.arguments) {
+                  functionArgs = item.arguments;
+                }
+              } catch (e) {
+                console.error('Error parsing function arguments:', e);
+                functionArgs = {};
+              }
+              
+              // Send function call to backend for execution
+              if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
+                websocketRef.current.send(JSON.stringify({
+                  type: 'function_call',
+                  call_id: item.id || item.call_id,
+                  function_name: item.name,
+                  arguments: functionArgs
+                }));
+              }
             }
-          } else if (eventData.type === 'response.audio_transcript.delta') {
+          }
+          // Handle function call updates (arguments being populated)
+          else if (eventData.type === 'conversation.updated') {
+            const item = eventData.item;
+            const delta = eventData.delta;
+            
+            if (item && item.type === 'function_call') {
+              console.log('Function call update:', item, delta);
+              // Function call arguments are being populated
+              // We'll wait for conversation.item.completed to execute
+            }
+          }
+          else if (eventData.type === 'response.audio_transcript.delta') {
             const delta = eventData.delta || '';
             if (delta) {
               addTranscriptMessage('assistant', delta);
@@ -175,58 +212,81 @@ export function useVoiceSession() {
           const message = JSON.parse(event.data);
           console.log('Received message from backend:', message);
           
-          if (message.type === 'rag_context') {
-            const context = message.context;
-            const query = message.query;
+          // Handle function call results
+          if (message.type === 'function_call_result') {
+            const { call_id, function_name, result } = message;
             
             if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
-              // Inject context into OpenAI session via data channel
-              // Update session instructions with context
-              const baseInstructions = `You are a helpful voice assistant. Be concise and natural in your responses.`;
-              
-              let instructions = baseInstructions;
-              if (context && context.trim()) {
-                instructions = `${baseInstructions}
-
-Use the following context to answer questions accurately:
-${context}
-
-If the context doesn't contain relevant information, say so.`;
+              // Send function call output back to OpenAI
+              if (result.success) {
+                // Format the result for OpenAI
+                let output = '';
+                if (function_name === 'search_knowledge_base') {
+                  if (result.context && result.context.trim()) {
+                    output = JSON.stringify({
+                      context: result.context,
+                      sources: result.sources || [],
+                      message: 'Knowledge base search completed successfully'
+                    });
+                  } else {
+                    output = JSON.stringify({
+                      context: '',
+                      sources: [],
+                      message: result.message || 'No relevant information found in knowledge base'
+                    });
+                  }
+                } else {
+                  output = JSON.stringify(result);
+                }
+                
+                // Send function call output to OpenAI
+                const functionOutput = {
+                  type: 'conversation.item.create',
+                  item: {
+                    type: 'function_call_output',
+                    call_id: call_id,
+                    output: output
+                  }
+                };
+                
+                dataChannelRef.current.send(JSON.stringify(functionOutput));
+                console.log('Sent function call result to OpenAI:', function_name);
+                
+                // Trigger response generation
+                const responseCreate = {
+                  type: 'response.create'
+                };
+                dataChannelRef.current.send(JSON.stringify(responseCreate));
+              } else {
+                // Send error result
+                const errorOutput = {
+                  type: 'conversation.item.create',
+                  item: {
+                    type: 'function_call_output',
+                    call_id: call_id,
+                    output: JSON.stringify({
+                      error: result.error || 'Function execution failed'
+                    })
+                  }
+                };
+                dataChannelRef.current.send(JSON.stringify(errorOutput));
+                
+                // Still trigger response so model can handle the error
+                const responseCreate = {
+                  type: 'response.create'
+                };
+                dataChannelRef.current.send(JSON.stringify(responseCreate));
               }
-              
-              // Update session instructions
-              const sessionUpdate = {
-                type: 'session.update',
-                session: {
-                  instructions: instructions
-                }
-              };
-              
-              dataChannelRef.current.send(JSON.stringify(sessionUpdate));
-              
-              // Send the query as a text message to trigger response with updated context
-              // Note: OpenAI may have already started generating, but this ensures context is available
-              const userMessage = {
-                type: 'conversation.item.create',
-                item: {
-                  type: 'message',
-                  role: 'user',
-                  content: query
-                }
-              };
-              
-              // Small delay to ensure session update is processed before sending message
-              setTimeout(() => {
-                if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
-                  dataChannelRef.current.send(JSON.stringify(userMessage));
-                  console.log('Injected RAG context and sent user message to OpenAI');
-                }
-              }, 200);
             }
-          } else if (message.type === 'rag_error') {
+          } 
+          // Keep backward compatibility for old rag_context messages (though shouldn't be used with function calling)
+          else if (message.type === 'rag_context') {
+            console.warn('Received rag_context message - this is the old approach. Function calling should be used instead.');
+          } 
+          else if (message.type === 'rag_error') {
             console.error('RAG service error:', message.error);
-            // Continue without context - OpenAI will still respond
-          } else if (message.type === 'error') {
+          } 
+          else if (message.type === 'error') {
             console.error('Backend error:', message.error);
           }
         } catch (err) {

@@ -102,16 +102,21 @@ voice-assistant-poc/
 
 - ✅ Real-time voice interaction
 - ✅ WebRTC-based audio streaming
-- ✅ OpenAI Realtime API integration
+- ✅ OpenAI Realtime API integration with **Function Calling**
 - ✅ ChromaDB RAG pipeline
 - ✅ Document ingestion (PDF, TXT, MD)
-- ✅ Knowledge-grounded responses
+- ✅ Knowledge-grounded responses via intelligent function calling
 - ✅ Basic web UI
+
+### Function Calling for RAG
+
+The application uses OpenAI Realtime API's native function calling feature to intelligently search the knowledge base. When users ask questions, the model decides when to call the `search_knowledge_base` function to retrieve relevant context, making responses more accurate and contextually aware.
 
 ## API Endpoints
 
 ### Backend
-- `WS /ws/signaling` - WebSocket signaling for WebRTC
+- `POST /api/realtime/session` - Create OpenAI Realtime session with function calling
+- `WS /api/ws/events/{session_id}` - WebSocket for function call execution
 - `GET /health` - Health check
 
 ### RAG Service

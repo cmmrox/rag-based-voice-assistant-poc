@@ -23,15 +23,33 @@ async def create_realtime_session(request: Request):
         
         logger.info(f"Received SDP offer from client: {len(sdp_text)} bytes")
         
-        # Session configuration
+        # Session configuration with RAG function calling support
         session_config = {
             "type": "realtime",
-            "model": "gpt-realtime",
+            "model": "gpt-4o-realtime-preview-2024-10-01",
             "audio": {
                 "output": {
                     "voice": "marin"
                 }
-            }
+            },
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "search_knowledge_base",
+                    "description": "Search the knowledge base for relevant information to answer user questions. Use this when you need specific information from documents or when the user asks about something that might be in the knowledge base.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query to find relevant information from the knowledge base"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            ],
+            "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the search_knowledge_base function to retrieve relevant context before answering."
         }
         
         # Forward to OpenAI using multipart form data

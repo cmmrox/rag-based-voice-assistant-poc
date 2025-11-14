@@ -220,6 +220,81 @@ Health check endpoint.
 
 ---
 
+## Function Calling (RAG Integration)
+
+The application uses OpenAI Realtime API function calling to intelligently search the knowledge base when needed.
+
+### Function: `search_knowledge_base`
+
+**Description**: Searches the knowledge base for relevant information to answer user questions.
+
+**Parameters**:
+- `query` (string, required): The search query to find relevant information
+
+**Flow**:
+1. User asks a question via voice
+2. OpenAI Realtime API transcribes the question
+3. Model decides if knowledge base search is needed
+4. If needed, model calls `search_knowledge_base` function
+5. Frontend receives function call event via WebRTC data channel
+6. Frontend sends function call request to backend via WebSocket (`/api/ws/events/{session_id}`)
+7. Backend executes RAG query and returns results
+8. Frontend sends function call output back to OpenAI via data channel
+9. Model generates response using retrieved context
+
+### WebSocket Endpoint: `/api/ws/events/{session_id}`
+
+**Connection**: `ws://localhost:8002/api/ws/events/{session_id}`
+
+#### Client → Server Messages
+
+**Function Call Request**:
+```json
+{
+  "type": "function_call",
+  "call_id": "call_abc123",
+  "function_name": "search_knowledge_base",
+  "arguments": {
+    "query": "What is the main topic?"
+  }
+}
+```
+
+#### Server → Client Messages
+
+**Function Call Result**:
+```json
+{
+  "type": "function_call_result",
+  "call_id": "call_abc123",
+  "function_name": "search_knowledge_base",
+  "result": {
+    "success": true,
+    "context": "[Document 1] Relevant text...",
+    "sources": [
+      {
+        "source": "document.pdf",
+        "chunk_id": 0,
+        "chunk_index": 0
+      }
+    ]
+  }
+}
+```
+
+**Function Call Error**:
+```json
+{
+  "type": "function_call_result",
+  "call_id": "call_abc123",
+  "function_name": "search_knowledge_base",
+  "result": {
+    "success": false,
+    "error": "Error message"
+  }
+}
+```
+
 ## WebSocket Protocol Flow
 
 1. Client connects to `/ws/signaling`
@@ -229,9 +304,11 @@ Health check endpoint.
 5. Client and server exchange `ice_candidate` messages
 6. Server sends `session_ready` when connection established
 7. Audio streams bidirectionally via WebRTC
-8. Server sends `transcription` when user speech is transcribed
-9. Server sends `response_text` when assistant responds
-10. Client sends `end_session` to terminate session
+8. **With Function Calling**: Model calls `search_knowledge_base` when needed
+9. Function call executed via WebSocket `/api/ws/events/{session_id}`
+10. Model generates response using retrieved context
+11. Server sends `response_text` when assistant responds
+12. Client sends `end_session` to terminate session
 
 ---
 

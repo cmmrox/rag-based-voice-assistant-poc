@@ -403,18 +403,24 @@ The voice assistant follows a microservices architecture with the following comp
 
 ### 5.3 Data Flow
 
-#### 5.3.1 Voice Query Flow
+#### 5.3.1 Voice Query Flow (with Function Calling)
 
 ```
 1. User speaks → Client captures audio
-2. Client → WebRTC → Session Manager → OpenAI Realtime API (STT)
-3. OpenAI API → Session Manager → RAG Service (transcribed text)
-4. RAG Service → Embedding API → Query vector generated
-5. RAG Service → ChromaDB → Relevant documents retrieved
-6. RAG Service → Assembles context + query → OpenAI API
-7. OpenAI API → Generates response text
-8. OpenAI API → Session Manager → TTS processing
-9. Session Manager → WebRTC → Client → Audio playback
+2. Client → WebRTC Data Channel → OpenAI Realtime API (STT)
+3. OpenAI API transcribes audio and analyzes query
+4. Model decides to call search_knowledge_base function
+5. OpenAI API → Client: Function call event (conversation.item.completed)
+6. Client → Backend WebSocket: Function call request with query
+7. Backend → RAG Service: HTTP POST with query text
+8. RAG Service → Embedding API → Query vector generated
+9. RAG Service → ChromaDB → Relevant documents retrieved
+10. RAG Service → Backend: Returns context and sources
+11. Backend → Client WebSocket: Function call result
+12. Client → OpenAI Realtime API: Function call output via data channel
+13. OpenAI API → Generates response text using function result context
+14. OpenAI API → Client: TTS audio stream via WebRTC
+15. Client → Audio playback
 ```
 
 #### 5.3.2 Multi-Turn Conversation Flow
@@ -432,14 +438,18 @@ The voice assistant follows a microservices architecture with the following comp
 ### 5.4 API Integration Points
 
 #### 5.4.1 OpenAI Realtime API
-- **Endpoint**: `wss://api.openai.com/v1/realtime`
+- **Endpoint**: `wss://api.openai.com/v1/realtime` (WebRTC via `/v1/realtime/calls`)
 - **Authentication**: Bearer token (API key)
-- **Protocol**: WebSocket with JSON-RPC-like messaging
+- **Protocol**: WebRTC with data channel for events
+- **Function Calling**: Native support for function/tool calling
 - **Key Events**:
   - `conversation.item.input_audio_buffer.speech_started`
   - `conversation.item.input_audio_buffer.transcription.completed`
+  - `conversation.item.completed` (for function calls)
+  - `conversation.updated` (for function call updates)
   - `response.audio_transcript.delta`
   - `response.done`
+- **Function Definition**: Tools registered in session configuration
 
 #### 5.4.2 OpenAI Embeddings API
 - **Endpoint**: `https://api.openai.com/v1/embeddings`
@@ -696,40 +706,54 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
    - Index for fast retrieval
 ```
 
-#### 7.3.2 Query Processing Pipeline
+#### 7.3.2 Query Processing Pipeline (with Function Calling)
 
 ```
-1. User Query (transcribed from voice)
+1. User Query (transcribed from voice by OpenAI Realtime API)
    ↓
-2. Query Preprocessing
+2. Model Analysis
+   - Model analyzes query and determines if knowledge base search is needed
+   - Model decides to call search_knowledge_base function when appropriate
+   ↓
+3. Function Call Execution
+   - OpenAI Realtime API sends function call event to frontend
+   - Frontend forwards function call to backend via WebSocket
+   - Backend receives function call with query parameter
+   ↓
+4. Query Preprocessing (Backend/RAG Service)
    - Normalize text
    - Extract key terms (optional)
    ↓
-3. Embedding Generation
+5. Embedding Generation (RAG Service)
    - Generate query embedding using OpenAI API
    - Cache embeddings for repeated queries
    ↓
-4. Vector Similarity Search
+6. Vector Similarity Search (RAG Service)
    - Query ChromaDB with embedding
    - Retrieve top-K documents (K=5 default)
    - Apply metadata filters if specified
    ↓
-5. Relevance Scoring
+7. Relevance Scoring (RAG Service)
    - Rank results by similarity score
    - Filter by minimum threshold (e.g., > 0.7)
    ↓
-6. Context Assembly
+8. Context Assembly (RAG Service)
    - Combine retrieved chunks
-   - Add conversation history if multi-turn
-   - Format for LLM prompt
+   - Format context with sources
+   - Return to backend
    ↓
-7. Response Generation
-   - Send context + query to OpenAI Realtime API
-   - Generate response with citations
+9. Function Result Return
+   - Backend sends function result to frontend via WebSocket
+   - Frontend sends function call output to OpenAI Realtime API
    ↓
-8. Response Delivery
-   - Convert to speech via TTS
-   - Stream to user
+10. Response Generation (OpenAI Realtime API)
+    - Model receives function result with context
+    - Model generates response using retrieved context
+    - Citations included automatically
+    ↓
+11. Response Delivery
+    - Convert to speech via TTS
+    - Stream to user via WebRTC
 ```
 
 ### 7.4 Embedding Strategy
@@ -769,32 +793,58 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
 - **Truncation**: Trim chunks if exceeding limit
 - **Conversation History**: Reserve tokens for previous turns
 
-### 7.6 Response Generation with RAG
+### 7.6 Response Generation with RAG (Function Calling)
 
-#### 7.6.1 Prompt Engineering
-- **System Prompt**: Define assistant role and behavior
-- **Context Injection**: Include retrieved documents with clear markers
-- **Citation Format**: Request citations for retrieved information
-- **Uncertainty Handling**: Instruct model to indicate when uncertain
+#### 7.6.1 Function Calling Approach
+- **Function Definition**: `search_knowledge_base` function registered in session configuration
+- **Model Decision**: Model intelligently decides when to call the function
+- **Function Execution**: Backend executes RAG query when function is called
+- **Context Delivery**: Function result contains retrieved context and sources
+- **Response Generation**: Model uses function result to generate informed response
 
-**Example Prompt Structure**:
+**Function Definition**:
+```json
+{
+  "type": "function",
+  "name": "search_knowledge_base",
+  "description": "Search the knowledge base for relevant information to answer user questions. Use this when you need specific information from documents.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query to find relevant information from the knowledge base"
+      }
+    },
+    "required": ["query"]
+  }
+}
 ```
-System: You are a helpful voice assistant. Answer questions using the provided context. 
-If the context doesn't contain relevant information, say so.
 
-Context:
-[Document 1 Title]
-[Document 1 Content]
+**Function Result Format**:
+```json
+{
+  "context": "[Document 1] Relevant text...\n\n[Document 2] More relevant text...",
+  "sources": [
+    {"source": "document.pdf", "chunk_id": 0},
+    {"source": "document.pdf", "chunk_id": 1}
+  ],
+  "message": "Knowledge base search completed successfully"
+}
+```
 
-[Document 2 Title]
-[Document 2 Content]
+#### 7.6.2 System Instructions
+- **Base Instructions**: Define assistant role and behavior
+- **Function Guidance**: Instruct model to use search_knowledge_base when needed
+- **Citation Handling**: Model automatically includes citations from function results
+- **Uncertainty Handling**: Model indicates when information is not found
 
-User Query: {user_query}
-
-Conversation History:
-{previous_turns}
-
-Response:
+**Example Session Configuration**:
+```json
+{
+  "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the search_knowledge_base function to retrieve relevant context before answering.",
+  "tools": [/* function definition above */]
+}
 ```
 
 #### 7.6.2 Response Quality Controls
@@ -945,18 +995,21 @@ The voice pipeline handles the complete flow of audio data from user input to sy
 
 ### 8.5 OpenAI Realtime API Integration
 
-#### 8.5.1 WebSocket Connection
-- **Endpoint**: `wss://api.openai.com/v1/realtime`
-- **Authentication**: Bearer token in connection header
-- **Protocol**: WebSocket with JSON-RPC-like messaging
+#### 8.5.1 WebRTC Connection
+- **Endpoint**: `https://api.openai.com/v1/realtime/calls` (SDP-based WebRTC)
+- **Authentication**: Bearer token in request header
+- **Protocol**: WebRTC with data channel for events
 - **Connection Lifecycle**: Maintain connection for session duration
+- **Data Channel**: Used for sending/receiving events and function calls
 
 #### 8.5.2 Session Configuration
 - **Model**: `gpt-4o-realtime-preview-2024-10-01` or latest
-- **Voice**: Configurable (alloy, echo, fable, onyx, nova, shimmer)
+- **Voice**: Configurable (alloy, echo, fable, onyx, nova, shimmer, marin)
 - **Temperature**: 0.8 (configurable)
 - **Max Response Length**: 4096 tokens (configurable)
 - **Modalities**: Audio input/output, text input/output
+- **Function Calling**: Native support via `tools` array in session configuration
+- **Instructions**: System instructions guiding model behavior and function usage
 
 #### 8.5.3 Event Handling
 - **Session Events**:
@@ -967,6 +1020,10 @@ The voice pipeline handles the complete flow of audio data from user input to sy
   - `input_audio_buffer.append`: Audio data received
   - `input_audio_buffer.speech_started`: Speech detected
   - `input_audio_buffer.transcription.completed`: Transcription done
+- **Function Call Events**:
+  - `conversation.item.completed`: Function call completed (item.type === 'function_call')
+  - `conversation.updated`: Function call updates (arguments being populated)
+  - Function call output sent via `conversation.item.create` with `type: 'function_call_output'`
 - **Output Events**:
   - `response.audio_transcript.delta`: Audio chunk available
   - `response.text.delta`: Text chunk available
@@ -986,6 +1043,18 @@ The voice pipeline handles the complete flow of audio data from user input to sy
 - **Output Text**: Receive text transcriptions and generated responses
 - **Display**: Show text in UI for user reference
 - **Logging**: Log text for analytics and debugging
+
+#### 8.5.6 Function Calling Integration
+- **Function Registration**: Functions defined in session configuration `tools` array
+- **Function Execution**: Backend executes functions when called by model
+- **Function Results**: Results sent back to OpenAI via data channel
+- **Event Flow**: 
+  1. Model calls function → `conversation.item.completed` event
+  2. Frontend receives event → Forwards to backend
+  3. Backend executes function → Returns result
+  4. Frontend sends result → Model generates response
+- **Function Definition**: JSON schema defining function name, description, and parameters
+- **Function Output**: JSON string containing function execution results
 
 ### 8.6 Latency Optimization
 

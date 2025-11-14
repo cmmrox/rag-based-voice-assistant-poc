@@ -41,10 +41,13 @@ connection_manager = ConnectionManager()
 @router.websocket("/ws/events/{session_id}")
 async def websocket_events(websocket: WebSocket, session_id: str):
     """
-    WebSocket endpoint for handling transcription events and RAG integration.
+    WebSocket endpoint for handling function call execution and RAG integration.
     
-    Frontend sends transcription events, backend queries RAG service,
-    and sends context back to frontend for injection into OpenAI.
+    With function calling enabled, OpenAI Realtime API calls the search_knowledge_base
+    function when needed. Frontend sends function call requests to this endpoint,
+    backend executes them via RAG service, and sends results back to frontend.
+    
+    Also supports backward compatibility with old transcription-based approach.
     """
     await connection_manager.connect(websocket, session_id)
     
@@ -58,46 +61,85 @@ async def websocket_events(websocket: WebSocket, session_id: str):
                 message_type = message.get("type")
                 
                 if message_type == "transcription":
-                    # Handle transcription event
+                    # Handle transcription event (kept for backward compatibility, but function calling is preferred)
                     transcript = message.get("transcript", "")
                     logger.info(f"Received transcription for session {session_id}: {transcript}")
                     
-                    if transcript:
-                        # Query RAG service for relevant context
+                    # Note: With function calling, RAG queries are handled via function calls
+                    # This transcription handler is kept for fallback/backward compatibility
+                    # In the new flow, OpenAI will call search_knowledge_base function when needed
+                
+                elif message_type == "function_call":
+                    # Handle function call execution request
+                    call_id = message.get("call_id")
+                    function_name = message.get("function_name")
+                    arguments = message.get("arguments", {})
+                    
+                    logger.info(f"Received function call request: {function_name} (call_id: {call_id})")
+                    
+                    if function_name == "search_knowledge_base":
                         try:
-                            rag_result = await rag_client.query(transcript)
+                            query = arguments.get("query", "")
+                            if not query:
+                                raise ValueError("Query parameter is required")
+                            
+                            # Query RAG service
+                            rag_result = await rag_client.query(query)
                             
                             if rag_result and rag_result.get("context"):
                                 context = rag_result.get("context", "")
                                 sources = rag_result.get("sources", [])
                                 
-                                logger.info(f"Retrieved RAG context: {len(context)} chars from {len(sources)} sources")
+                                logger.info(f"RAG query successful: {len(context)} chars from {len(sources)} sources")
                                 
-                                # Send context back to frontend
+                                # Send function call result back to frontend
                                 await connection_manager.send_message(session_id, {
-                                    "type": "rag_context",
-                                    "context": context,
-                                    "sources": sources,
-                                    "query": transcript
+                                    "type": "function_call_result",
+                                    "call_id": call_id,
+                                    "function_name": function_name,
+                                    "result": {
+                                        "context": context,
+                                        "sources": sources,
+                                        "success": True
+                                    }
                                 })
                             else:
-                                # No context found, send empty context
-                                logger.info(f"No RAG context found for query: {transcript}")
+                                # No context found
+                                logger.info(f"No RAG context found for query: {query}")
                                 await connection_manager.send_message(session_id, {
-                                    "type": "rag_context",
-                                    "context": "",
-                                    "sources": [],
-                                    "query": transcript
+                                    "type": "function_call_result",
+                                    "call_id": call_id,
+                                    "function_name": function_name,
+                                    "result": {
+                                        "context": "",
+                                        "sources": [],
+                                        "success": True,
+                                        "message": "No relevant information found in knowledge base"
+                                    }
                                 })
                         
                         except Exception as e:
-                            logger.error(f"Error querying RAG service: {e}", exc_info=True)
-                            # Send error response but don't break the connection
+                            logger.error(f"Error executing function call: {e}", exc_info=True)
                             await connection_manager.send_message(session_id, {
-                                "type": "rag_error",
-                                "error": "Failed to retrieve context from RAG service",
-                                "query": transcript
+                                "type": "function_call_result",
+                                "call_id": call_id,
+                                "function_name": function_name,
+                                "result": {
+                                    "success": False,
+                                    "error": str(e)
+                                }
                             })
+                    else:
+                        logger.warning(f"Unknown function name: {function_name}")
+                        await connection_manager.send_message(session_id, {
+                            "type": "function_call_result",
+                            "call_id": call_id,
+                            "function_name": function_name,
+                            "result": {
+                                "success": False,
+                                "error": f"Unknown function: {function_name}"
+                            }
+                        })
                 
                 elif message_type == "ping":
                     # Heartbeat/ping message

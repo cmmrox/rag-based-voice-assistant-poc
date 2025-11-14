@@ -693,7 +693,7 @@ This document breaks down the PRD requirements into executable development tasks
 
 ---
 
-## Phase 5: RAG Integration with Voice Flow
+## Phase 5: RAG Integration with Voice Flow (Function Calling)
 
 ### Task 5.1: Implement RAG Service Client (Backend)
 **Description:** Create HTTP client to call RAG service  
@@ -717,67 +717,95 @@ This document breaks down the PRD requirements into executable development tasks
 
 ---
 
-### Task 5.2: Integrate RAG Call on Transcription
-**Description:** Call RAG service when transcription completes  
+### Task 5.2: Register RAG Function in Session Configuration
+**Description:** Add search_knowledge_base function to OpenAI Realtime session configuration  
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
+- `backend/app/routes/realtime.py`
+
+**Implementation:**
+- Define function schema with name, description, and parameters
+- Add function to `tools` array in session configuration
+- Update session instructions to guide model on function usage
+- Ensure function is registered when creating session
+
+**Acceptance Criteria:**
+- Function registered in session configuration
+- Function schema correctly defined
+- Instructions guide model appropriately
+
+**Dependencies:** Task 3.1
+
+---
+
+### Task 5.3: Implement Function Call Handler (Backend)
+**Description:** Handle function call execution requests from frontend  
+**Files:**
+- `backend/app/routes/events.py` (extend WebSocket handler)
 - `backend/app/services/rag_client.py` (use)
 
 **Implementation:**
-- On transcription completion event
-- Extract query text
-- Call RAG service
-- Wait for context
+- Listen for `function_call` messages via WebSocket
+- Extract function name and arguments
+- Execute `search_knowledge_base` function by calling RAG service
+- Format function result with context and sources
+- Send function result back to frontend via WebSocket
 - Handle errors gracefully
 
 **Acceptance Criteria:**
-- RAG called on transcription
-- Context retrieved
-- Errors don't crash system
+- Function calls received and processed
+- RAG queries executed correctly
+- Results formatted and returned
+- Errors handled without crashing
 
-**Dependencies:** Tasks 3.4, 5.1
+**Dependencies:** Tasks 5.1, 5.2
 
 ---
 
-### Task 5.3: Implement Context Injection into OpenAI Session
-**Description:** Inject RAG context into OpenAI Realtime API session  
+### Task 5.4: Implement Function Call Event Handling (Frontend)
+**Description:** Handle function call events from OpenAI and execute them  
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
+- `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Update session instructions with context
-- Format context appropriately
-- Submit user query to session
-- Handle context injection errors
+- Listen for `conversation.item.completed` events with function calls
+- Parse function call arguments (handle string or object format)
+- Send function call request to backend via WebSocket
+- Receive function call result from backend
+- Send function call output back to OpenAI via data channel
+- Trigger response generation after function result sent
 
 **Acceptance Criteria:**
-- Context injected into session
-- Instructions updated correctly
-- User query submitted
+- Function call events detected
+- Function calls forwarded to backend
+- Function results sent back to OpenAI
+- Response generation triggered correctly
 
-**Dependencies:** Task 5.2
+**Dependencies:** Tasks 2.3, 5.3
 
 ---
 
-### Task 5.4: Test End-to-End RAG Voice Flow
-**Description:** Test complete flow with knowledge base  
+### Task 5.5: Test End-to-End RAG Voice Flow with Function Calling
+**Description:** Test complete flow with knowledge base using function calling  
 **Files:**
 - Test with ingested documents
-- Verify context retrieval
-- Verify context usage in responses
+- Verify function calling works
+- Verify context retrieval and usage
 
 **Implementation:**
 - Ingest test documents
 - Start voice session
 - Ask question related to documents
-- Verify response references context
+- Verify model calls search_knowledge_base function
+- Verify function executes and returns context
+- Verify response references knowledge base context
 
 **Acceptance Criteria:**
-- Context retrieved correctly
+- Function calling works correctly
+- Context retrieved via function call
 - Responses reference knowledge base
-- End-to-end flow works
+- End-to-end flow works smoothly
 
-**Dependencies:** Tasks 5.2, 5.3
+**Dependencies:** Tasks 5.2, 5.3, 5.4
 
 ---
 
@@ -998,7 +1026,7 @@ This document breaks down the PRD requirements into executable development tasks
 ---
 
 ### Task 7.3: Test RAG Integration
-**Description:** Test RAG retrieval and context injection  
+**Description:** Test RAG retrieval via function calling  
 **Files:**
 - Test documents
 - Test queries

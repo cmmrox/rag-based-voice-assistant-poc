@@ -166,7 +166,7 @@ The POC will be considered successful if:
 - ✅ ChromaDB vector storage
 - ✅ Query embedding generation
 - ✅ Vector similarity search
-- ✅ Context injection into OpenAI prompts
+- ✅ Function calling for intelligent RAG integration
 
 #### 3.1.3 User Interface
 - ✅ Microphone button (start/stop)
@@ -327,7 +327,7 @@ External Services:
 - **Audio Routing**: Forward audio between client and OpenAI API
 - **OpenAI Gateway**: Maintain WebSocket connection to OpenAI Realtime API
 - **Event Processing**: Handle transcription and response events
-- **RAG Integration**: Call RAG service to retrieve context
+- **Function Call Execution**: Execute RAG function calls from OpenAI Realtime API
 - **Session Management**: Track active sessions (in-memory)
 
 #### 4.2.3 RAG Service (FastAPI)
@@ -344,28 +344,28 @@ External Services:
 
 ### 4.3 Data Flow
 
-#### 4.3.1 Voice Query Flow
+#### 4.3.1 Voice Query Flow (with Function Calling)
 
 ```
 1. User clicks microphone button
    ↓
 2. Frontend requests microphone access
    ↓
-3. Frontend establishes WebSocket connection to backend
+3. Frontend establishes WebRTC connection to OpenAI Realtime API
    ↓
-4. Backend creates WebRTC offer
+4. Frontend establishes WebSocket connection to backend for function execution
    ↓
-5. Frontend receives offer, creates answer, exchanges ICE candidates
+5. User speaks → Frontend captures audio
    ↓
-6. WebRTC peer connection established
+6. Frontend → WebRTC Data Channel → OpenAI Realtime API: Audio stream
    ↓
-7. User speaks → Frontend captures audio
+7. OpenAI API transcribes audio → Transcription event
    ↓
-8. Frontend → WebRTC → Backend: Audio stream
+8. Model analyzes query and decides to call search_knowledge_base function
    ↓
-9. Backend → OpenAI Realtime API: Forward audio stream
+9. OpenAI API → Frontend: Function call event (conversation.item.completed)
    ↓
-10. OpenAI API → Backend: Transcription event (text)
+10. Frontend → Backend WebSocket: Function call request with query
     ↓
 11. Backend → RAG Service: HTTP POST with query text
     ↓
@@ -375,13 +375,15 @@ External Services:
     ↓
 14. RAG Service → Backend: Return retrieved context
     ↓
-15. Backend → OpenAI Realtime API: Inject context + generate response
+15. Backend → Frontend WebSocket: Function call result with context
     ↓
-16. OpenAI API → Backend: Response text + audio stream
+16. Frontend → OpenAI Realtime API: Function call output via data channel
     ↓
-17. Backend → WebRTC → Frontend: Audio stream
+17. OpenAI API generates response using function result context
     ↓
-18. Frontend: Play audio and display transcript
+18. OpenAI API → Frontend: Response audio stream via WebRTC
+    ↓
+19. Frontend: Play audio and display transcript
 ```
 
 #### 4.3.2 Document Ingestion Flow
@@ -583,27 +585,55 @@ session = client.beta.realtime.connect(
 - `response.done` - Response complete
 - `error` - Error occurred
 
-**Event Processing:**
+**Event Processing (with Function Calling):**
 ```python
-async def handle_openai_events(session):
-    async for event in session:
-        if event.type == "input_audio_buffer.transcription.completed":
-            query_text = event.transcript
-            # Trigger RAG retrieval
-            context = await retrieve_context(query_text)
-            # Inject context into session
-            session.submit(
-                type="conversation.item.create",
-                item={
-                    "type": "message",
-                    "role": "user",
-                    "content": query_text
+# Function calling is handled natively by OpenAI Realtime API
+# The model decides when to call the search_knowledge_base function
+
+# Session configuration includes function definition
+session_config = {
+    "tools": [
+        {
+            "type": "function",
+            "name": "search_knowledge_base",
+            "description": "Search the knowledge base for relevant information",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    ]
+}
+
+# Frontend handles function call events
+async def handle_function_call(event):
+    if event.type == "conversation.item.completed":
+        item = event.item
+        if item.type == "function_call" and item.name == "search_knowledge_base":
+            # Send function call to backend for execution
+            await websocket.send({
+                "type": "function_call",
+                "call_id": item.id,
+                "function_name": item.name,
+                "arguments": item.arguments
+            })
+            
+            # Backend executes RAG query and returns result
+            # Frontend sends result back to OpenAI
+            await data_channel.send({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": item.id,
+                    "output": json.dumps({"context": context, "sources": sources})
                 }
-            )
-            # Add context to system message
-            session.update(
-                instructions=f"Context: {context}\n\n{base_instructions}"
-            )
+            })
 ```
 
 #### 6.2.3 Audio Stream Forwarding
@@ -717,37 +747,30 @@ async def retrieve_context(query: str) -> str:
         return result["context"]
 ```
 
-#### 6.4.2 Context Injection
+#### 6.4.2 Function Calling for RAG Integration
 
 ```python
-# When transcription completes
-if event.type == "input_audio_buffer.transcription.completed":
-    query = event.transcript
-    
-    # Retrieve context
-    context = await retrieve_context(query)
-    
-    # Update session instructions with context
-    session.update(
-        instructions=f"""
-        You are a helpful voice assistant. Use the following context to answer questions.
+# Function calling approach - Model decides when to search knowledge base
+# Function is registered in session configuration
+
+# Backend handles function call execution
+async def handle_function_call(call_id, function_name, arguments):
+    if function_name == "search_knowledge_base":
+        query = arguments.get("query")
         
-        Context:
-        {context}
+        # Retrieve context from RAG service
+        context = await retrieve_context(query)
         
-        If the context doesn't contain relevant information, say so.
-        """
-    )
-    
-    # Submit user query
-    session.submit(
-        type="conversation.item.create",
-        item={
-            "type": "message",
-            "role": "user",
-            "content": query
+        # Return function result
+        return {
+            "success": True,
+            "context": context,
+            "sources": sources
         }
-    )
+
+# Frontend receives function call from OpenAI and forwards to backend
+# Frontend sends function result back to OpenAI
+# Model uses function result to generate response
 ```
 
 ### 6.5 Frontend Implementation
@@ -965,7 +988,7 @@ export default function Transcript({ messages }: { messages: Message[] }) {
 - ✅ Audio streams bidirectionally
 - ✅ OpenAI Realtime API integration works
 - ✅ ChromaDB queries return relevant results
-- ✅ Context injection improves response quality
+- ✅ Function calling enables intelligent knowledge base search
 - ✅ System handles basic error scenarios
 
 ---
@@ -1037,13 +1060,13 @@ export default function Transcript({ messages }: { messages: Message[] }) {
 
 **Deliverables:**
 - RAG service called from backend
-- Context injected into OpenAI prompts
+- Function calling integrated for RAG queries
 - Knowledge-grounded responses working
 
 **Tasks:**
 1. Integrate RAG service client in backend
-2. Call RAG service on transcription completion
-3. Inject context into OpenAI session
+2. Model calls search_knowledge_base function when needed
+3. Function executes RAG query and returns context to model
 4. Test end-to-end flow with knowledge base
 
 ### Phase 6: UI Implementation (Week 3-4)

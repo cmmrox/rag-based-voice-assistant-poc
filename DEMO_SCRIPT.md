@@ -45,7 +45,7 @@ Navigate to http://localhost:3000 in a modern browser (Chrome recommended).
 ### Step 1: Introduction (30 seconds)
 
 **Say:**
-"Today I'll demonstrate a RAG-based voice assistant that can answer questions using a knowledge base. The system uses WebRTC for real-time audio, OpenAI's Realtime API for speech-to-text and text-to-speech, and ChromaDB for vector-based document retrieval."
+"Today I'll demonstrate a RAG-based voice assistant that can answer questions using a knowledge base. The system uses WebRTC for real-time audio, OpenAI's Realtime API for speech-to-text and text-to-speech with native function calling, and ChromaDB for vector-based document retrieval. The model intelligently decides when to search the knowledge base using function calling."
 
 ### Step 2: Start Voice Session (30 seconds)
 
@@ -71,7 +71,9 @@ Navigate to http://localhost:3000 in a modern browser (Chrome recommended).
 - Status changes to "Listening"
 - Your speech is transcribed
 - Status changes to "Processing"
-- RAG service retrieves relevant context
+- Model analyzes query and calls search_knowledge_base function (if needed)
+- Function executes: RAG service retrieves relevant context
+- Function result returned to model
 - Assistant responds with knowledge-grounded answer
 - Status changes to "Speaking"
 - Response appears in transcript
@@ -215,7 +217,9 @@ Navigate to http://localhost:3000 in a modern browser (Chrome recommended).
    - Low latency
    - Natural conversation flow
 
-2. **RAG Integration**
+2. **RAG Integration with Function Calling**
+   - Native function calling for intelligent knowledge base search
+   - Model decides when to search knowledge base
    - Knowledge-grounded responses
    - Relevant context retrieval
 
