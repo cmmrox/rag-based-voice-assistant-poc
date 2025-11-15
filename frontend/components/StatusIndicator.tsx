@@ -1,59 +1,74 @@
 'use client';
 
-import { SessionStatus } from '@/hooks/useVoiceSession';
+import { SessionStatus } from '@/types/session';
 
+/**
+ * Props for the StatusIndicator component
+ */
 interface StatusIndicatorProps {
   status: SessionStatus;
 }
 
-export default function StatusIndicator({ status }: StatusIndicatorProps) {
-  const getStatusText = () => {
-    switch (status) {
-      case 'idle':
-        return 'Idle';
-      case 'connecting':
-        return 'Connecting...';
-      case 'connected':
-        return 'Ready';
-      case 'listening':
-        return 'Listening';
-      case 'processing':
-        return 'Processing';
-      case 'speaking':
-        return 'Speaking';
-      case 'error':
-        return 'Error';
-      default:
-        return 'Unknown';
-    }
-  };
+/**
+ * Status configuration object
+ * Maps each session status to its display text and color
+ */
+const STATUS_CONFIG: Record<
+  SessionStatus,
+  {
+    text: string;
+    textColor: string;
+    bgColor: string;
+  }
+> = {
+  idle: {
+    text: 'Idle',
+    textColor: 'text-gray-500',
+    bgColor: 'bg-gray-500',
+  },
+  connecting: {
+    text: 'Connecting...',
+    textColor: 'text-yellow-500',
+    bgColor: 'bg-yellow-500',
+  },
+  listening: {
+    text: 'Listening',
+    textColor: 'text-green-600',
+    bgColor: 'bg-green-600',
+  },
+  processing: {
+    text: 'Processing',
+    textColor: 'text-yellow-600',
+    bgColor: 'bg-yellow-600',
+  },
+  speaking: {
+    text: 'Speaking',
+    textColor: 'text-blue-600',
+    bgColor: 'bg-blue-600',
+  },
+  error: {
+    text: 'Error',
+    textColor: 'text-red-600',
+    bgColor: 'bg-red-600',
+  },
+};
 
-  const getStatusColor = () => {
-    switch (status) {
-      case 'idle':
-        return 'text-gray-500';
-      case 'connecting':
-        return 'text-yellow-500';
-      case 'connected':
-        return 'text-green-500';
-      case 'listening':
-        return 'text-green-600';
-      case 'processing':
-        return 'text-yellow-600';
-      case 'speaking':
-        return 'text-blue-600';
-      case 'error':
-        return 'text-red-600';
-      default:
-        return 'text-gray-500';
-    }
-  };
+/**
+ * StatusIndicator Component
+ *
+ * Displays the current session status with a colored indicator dot and text label.
+ * The color changes based on the current status to provide visual feedback to the user.
+ *
+ * @param status - The current session status
+ */
+export default function StatusIndicator({ status }: StatusIndicatorProps) {
+  const config = STATUS_CONFIG[status] || STATUS_CONFIG.idle;
 
   return (
     <div className="flex items-center gap-2">
-      <div className={`w-3 h-3 rounded-full ${getStatusColor().replace('text-', 'bg-')}`}></div>
-      <span className={`text-sm font-medium ${getStatusColor()}`}>
-        Status: {getStatusText()}
+      <div className={`w-3 h-3 rounded-full ${config.bgColor}`}></div>
+      <span className={`text-sm font-medium ${config.textColor}`}>
+        Status: {config.text}
       </span>
     </div>
   );

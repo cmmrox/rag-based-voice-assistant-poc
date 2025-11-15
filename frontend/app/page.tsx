@@ -7,6 +7,18 @@ import StatusIndicator from '@/components/StatusIndicator';
 import Transcript from '@/components/Transcript';
 import ErrorMessage from '@/components/ErrorMessage';
 
+/**
+ * Home Page Component
+ *
+ * Main application page for the RAG-based voice assistant.
+ * Manages the voice session lifecycle and displays the conversation interface.
+ *
+ * Features:
+ * - Voice session control (start/stop)
+ * - Real-time conversation transcript
+ * - Session status indicator
+ * - Error message display with dismissal
+ */
 export default function Home() {
   const {
     status,
@@ -14,11 +26,15 @@ export default function Home() {
     error,
     startSession,
     stopSession,
-    addTranscriptMessage
   } = useVoiceSession();
 
-  const [dismissedError, setDismissedError] = useState<string | null>(null);
+  // Track which error was last dismissed to avoid showing the same error twice
+  const [lastDismissedError, setLastDismissedError] = useState<string | null>(null);
 
+  /**
+   * Handles microphone button clicks
+   * Starts a new session if idle or in error state, otherwise stops the current session
+   */
   const handleMicrophoneClick = async () => {
     if (status === 'idle' || status === 'error') {
       await startSession();
@@ -27,7 +43,11 @@ export default function Home() {
     }
   };
 
-  const displayError = error && error !== dismissedError ? error : null;
+  /**
+   * Determines which error to display
+   * Only shows errors that haven't been dismissed
+   */
+  const displayError = error && error !== lastDismissedError ? error : null;
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-8 bg-gray-100">
@@ -40,7 +60,7 @@ export default function Home() {
           {/* Error Message */}
           <ErrorMessage
             error={displayError}
-            onDismiss={() => setDismissedError(error || null)}
+            onDismiss={() => setLastDismissedError(error || null)}
           />
 
           {/* Microphone Button and Status */}
