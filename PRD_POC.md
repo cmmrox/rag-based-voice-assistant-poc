@@ -361,7 +361,7 @@ External Services:
    ↓
 7. OpenAI API transcribes audio → Transcription event
    ↓
-8. Model analyzes query and decides to call search_knowledge_base function
+8. Model analyzes query and decides to call rag_knowledge function
    ↓
 9. OpenAI API → Frontend: Function call event (conversation.item.completed)
    ↓
@@ -588,15 +588,15 @@ session = client.beta.realtime.connect(
 **Event Processing (with Function Calling):**
 ```python
 # Function calling is handled natively by OpenAI Realtime API
-# The model decides when to call the search_knowledge_base function
+# The model decides when to call the rag_knowledge function
 
 # Session configuration includes function definition
 session_config = {
     "tools": [
         {
             "type": "function",
-            "name": "search_knowledge_base",
-            "description": "Search the knowledge base for relevant information",
+            "name": "rag_knowledge",
+            "description": "Search and retrieve information from the knowledge base to answer user questions",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -615,7 +615,7 @@ session_config = {
 async def handle_function_call(event):
     if event.type == "conversation.item.completed":
         item = event.item
-        if item.type == "function_call" and item.name == "search_knowledge_base":
+        if item.type == "function_call" and item.name == "rag_knowledge":
             # Send function call to backend for execution
             await websocket.send({
                 "type": "function_call",
@@ -755,7 +755,7 @@ async def retrieve_context(query: str) -> str:
 
 # Backend handles function call execution
 async def handle_function_call(call_id, function_name, arguments):
-    if function_name == "search_knowledge_base":
+    if function_name == "rag_knowledge":
         query = arguments.get("query")
         
         # Retrieve context from RAG service
@@ -1065,7 +1065,7 @@ export default function Transcript({ messages }: { messages: Message[] }) {
 
 **Tasks:**
 1. Integrate RAG service client in backend
-2. Model calls search_knowledge_base function when needed
+2. Model calls rag_knowledge function when needed
 3. Function executes RAG query and returns context to model
 4. Test end-to-end flow with knowledge base
 
@@ -1121,7 +1121,7 @@ export default function Transcript({ messages }: { messages: Message[] }) {
 ### 10.1 Project Structure
 
 ```
-voice-assistant-poc/
+rag-based-voice-assistant-poc/
 ├── frontend/                    # Next.js application
 │   ├── app/
 │   │   ├── page.tsx            # Main page
@@ -1129,10 +1129,20 @@ voice-assistant-poc/
 │   ├── components/
 │   │   ├── MicrophoneButton.tsx
 │   │   ├── Transcript.tsx
-│   │   └── StatusIndicator.tsx
+│   │   ├── StatusIndicator.tsx
+│   │   └── ErrorMessage.tsx
 │   ├── hooks/
-│   │   └── useVoiceSession.ts
-│   ├── lib/
+│   │   └── useVoiceSession.ts  # Main voice session hook
+│   ├── constants/              # Frontend constants
+│   │   ├── timing.ts
+│   │   ├── tools.ts            # Function definitions
+│   │   └── api.ts
+│   ├── types/                  # TypeScript type definitions
+│   │   ├── session.ts
+│   │   └── openai.ts
+│   ├── utils/                  # Utility functions
+│   │   ├── functionCalls.ts
+│   │   ├── webrtc.ts
 │   │   └── websocket.ts
 │   ├── package.json
 │   └── next.config.js
@@ -1140,29 +1150,32 @@ voice-assistant-poc/
 ├── backend/                     # FastAPI backend
 │   ├── app/
 │   │   ├── main.py             # FastAPI app
+│   │   ├── config.py           # Configuration
 │   │   ├── routes/
-│   │   │   └── websocket.py    # WebSocket routes
+│   │   │   ├── realtime.py     # SDP forwarding endpoint
+│   │   │   └── events.py       # WebSocket for function calls
 │   │   ├── services/
-│   │   │   ├── webrtc.py       # WebRTC handling
-│   │   │   ├── openai_gateway.py
-│   │   │   └── rag_client.py
-│   │   └── models/
-│   │       └── session.py
+│   │   │   └── rag_client.py   # RAG service HTTP client
+│   │   ├── constants/          # Backend constants
+│   │   └── utils/              # Utility functions
 │   ├── requirements.txt
 │   └── Dockerfile
 │
 ├── rag-service/                 # RAG service (FastAPI)
 │   ├── app/
 │   │   ├── main.py
+│   │   ├── config.py           # Configuration
 │   │   ├── routes/
-│   │   │   ├── documents.py
-│   │   │   └── query.py
+│   │   │   ├── documents.py    # Document ingestion
+│   │   │   └── rag.py          # RAG query endpoint
 │   │   ├── services/
-│   │   │   ├── embedding.py
+│   │   │   ├── embedding_service.py
 │   │   │   ├── chromadb_service.py
-│   │   │   └── document_parser.py
-│   │   └── models/
-│   │       └── schemas.py
+│   │   │   └── document_service.py
+│   │   ├── models/
+│   │   │   └── schemas.py      # Pydantic models
+│   │   ├── constants/          # RAG constants
+│   │   └── utils/              # Utility functions
 │   ├── requirements.txt
 │   └── Dockerfile
 │
@@ -1290,7 +1303,8 @@ volumes:
 ### 10.5 API Endpoints
 
 #### Backend Endpoints
-- `WS /ws/signaling` - WebSocket signaling for WebRTC
+- `POST /api/realtime/session` - Create OpenAI Realtime session (SDP forwarding)
+- `WebSocket /api/ws/events/{session_id}` - RAG function call execution
 - `GET /health` - Health check
 
 #### RAG Service Endpoints

@@ -409,7 +409,7 @@ The voice assistant follows a microservices architecture with the following comp
 1. User speaks → Client captures audio
 2. Client → WebRTC Data Channel → OpenAI Realtime API (STT)
 3. OpenAI API transcribes audio and analyzes query
-4. Model decides to call search_knowledge_base function
+4. Model decides to call rag_knowledge function
 5. OpenAI API → Client: Function call event (conversation.item.completed)
 6. Client → Backend WebSocket: Function call request with query
 7. Backend → RAG Service: HTTP POST with query text
@@ -713,7 +713,7 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
    ↓
 2. Model Analysis
    - Model analyzes query and determines if knowledge base search is needed
-   - Model decides to call search_knowledge_base function when appropriate
+   - Model decides to call rag_knowledge function when appropriate
    ↓
 3. Function Call Execution
    - OpenAI Realtime API sends function call event to frontend
@@ -796,7 +796,7 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
 ### 7.6 Response Generation with RAG (Function Calling)
 
 #### 7.6.1 Function Calling Approach
-- **Function Definition**: `search_knowledge_base` function registered in session configuration
+- **Function Definition**: `rag_knowledge` function registered in session configuration
 - **Model Decision**: Model intelligently decides when to call the function
 - **Function Execution**: Backend executes RAG query when function is called
 - **Context Delivery**: Function result contains retrieved context and sources
@@ -806,8 +806,8 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
 ```json
 {
   "type": "function",
-  "name": "search_knowledge_base",
-  "description": "Search the knowledge base for relevant information to answer user questions. Use this when you need specific information from documents.",
+  "name": "rag_knowledge",
+  "description": "Search and retrieve information from the knowledge base to answer user questions. Use this when you need specific information from documents.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -835,14 +835,14 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
 
 #### 7.6.2 System Instructions
 - **Base Instructions**: Define assistant role and behavior
-- **Function Guidance**: Instruct model to use search_knowledge_base when needed
+- **Function Guidance**: Instruct model to use rag_knowledge when needed
 - **Citation Handling**: Model automatically includes citations from function results
 - **Uncertainty Handling**: Model indicates when information is not found
 
 **Example Session Configuration**:
 ```json
 {
-  "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the search_knowledge_base function to retrieve relevant context before answering.",
+  "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the rag_knowledge function to retrieve relevant context before answering.",
   "tools": [/* function definition above */]
 }
 ```

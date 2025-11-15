@@ -342,11 +342,13 @@ lsof -i :8002
 ### Issue: Function calling not working
 
 **Solution:**
-- Ensure session configuration includes `tools` array with `search_knowledge_base` function
-- Check WebSocket connection is established (check browser console)
-- Verify RAG service is running and accessible
+- Ensure session configuration includes `tools` array with `rag_knowledge` function
+- Check WebRTC connection is established with OpenAI (check browser console)
+- Check WebSocket connection to backend is established (check browser console)
+- Verify RAG service is running and accessible (http://localhost:8001/health)
 - Check backend logs for function call execution errors
 - Ensure documents are ingested before querying
+- Verify frontend is forwarding function calls to backend via WebSocket `/api/ws/events/{session_id}`
 
 ### Issue: Docker build fails
 
@@ -412,13 +414,16 @@ curl -X POST http://localhost:8001/api/rag/query \
 The application uses OpenAI Realtime API's native function calling feature:
 
 1. **User speaks** → Audio captured via microphone
-2. **OpenAI Realtime API** → Transcribes speech to text
-3. **Model analyzes** → Decides if knowledge base search is needed
-4. **Function call** → Model calls `search_knowledge_base` function (if needed)
-5. **RAG query** → Backend executes function, queries ChromaDB via RAG service
-6. **Function result** → Context returned to model
-7. **Response generation** → Model generates answer using retrieved context
-8. **Audio response** → Response converted to speech and played to user
+2. **Frontend ↔ OpenAI** → Direct WebRTC connection established
+3. **OpenAI Realtime API** → Transcribes speech to text
+4. **Model analyzes** → Decides if knowledge base search is needed
+5. **Function call** → Model calls `rag_knowledge` function (if needed) via data channel
+6. **Frontend → Backend** → Function call forwarded via WebSocket to backend
+7. **RAG query** → Backend executes function, queries ChromaDB via RAG service
+8. **Function result** → Context returned to backend, then to frontend via WebSocket
+9. **Frontend → OpenAI** → Function result sent back via WebRTC data channel
+10. **Response generation** → Model generates answer using retrieved context
+11. **Audio response** → Response converted to speech and played to user via WebRTC
 
 ## Next Steps
 

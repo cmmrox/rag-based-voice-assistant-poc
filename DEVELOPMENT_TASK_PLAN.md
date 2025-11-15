@@ -1,9 +1,36 @@
 # Development Task Plan - RAG-Based Voice Assistant POC
 
-**Project:** Web-Based Voice Assistant with RAG Integration  
-**Version:** 1.0-POC  
-**Created:** 2024  
-**Status:** Planning Phase
+> **⚠️ IMPORTANT NOTE**: This document represents the **ORIGINAL PLANNING** for this POC project. The actual implementation differs from this plan in several key areas. Please refer to the [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [API_DOCUMENTATION.md](API_DOCUMENTATION.md) for the current working implementation.
+
+**Project:** Web-Based Voice Assistant with RAG Integration
+**Version:** 1.0-POC
+**Created:** 2024
+**Status:** ✅ COMPLETED (Actual implementation differs from plan - see note above)
+
+---
+
+## Key Differences Between Plan and Actual Implementation
+
+The actual implementation made the following architectural decisions that differ from this plan:
+
+1. **No WebSocket Signaling**: Instead of WebSocket-based WebRTC signaling (`/ws/signaling`), the implementation uses HTTP POST `/api/realtime/session` to forward SDP offers to OpenAI.
+
+2. **Direct WebRTC to OpenAI**: Frontend establishes a direct WebRTC connection with OpenAI Realtime API, not through the backend.
+
+3. **Function Name Changed**: The function is named `rag_knowledge` instead of `search_knowledge_base`.
+
+4. **WebSocket for RAG Only**: WebSocket endpoint `/api/ws/events/{session_id}` is used only for RAG function call execution, not for general signaling.
+
+5. **Client-Side Session Management**: Sessions are managed client-side; no server-side session storage (`session_manager.py` was not implemented).
+
+6. **No openai_gateway.py**: The `openai_gateway.py` module was not implemented; instead, SDP forwarding is handled directly in the routes.
+
+7. **Simplified Architecture**: The implementation is simpler than planned, focusing on core POC functionality.
+
+For current architecture details, see:
+- [README.md](README.md) - Current system overview
+- [API_DOCUMENTATION.md](API_DOCUMENTATION.md) - Actual API endpoints
+- [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture (if available)
 
 ---
 
