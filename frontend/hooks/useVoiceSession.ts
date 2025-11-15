@@ -68,6 +68,9 @@ export function useVoiceSession() {
       // Set up data channel for sending and receiving events
       const dc = pc.createDataChannel("oai-events");
       dataChannelRef.current = dc;
+      
+      // Store session config to be sent when data channel opens
+      let sessionConfigToSend: any = null;
 
       // Listen for server events from OpenAI
       dc.onmessage = async (event) => {
@@ -145,6 +148,22 @@ export function useVoiceSession() {
       dc.onopen = () => {
         console.log('Data channel opened');
         setStatus('connected');
+        
+        // Send session configuration to OpenAI via data channel
+        if (sessionConfigToSend) {
+          try {
+            // Send session.update event with the configuration
+            // OpenAI Realtime API expects the session config directly in the event
+            const sessionUpdateEvent = {
+              type: 'session.update',
+              ...sessionConfigToSend
+            };
+            dc.send(JSON.stringify(sessionUpdateEvent));
+            console.log('Sent session configuration to OpenAI');
+          } catch (e) {
+            console.error('Failed to send session configuration:', e);
+          }
+        }
       };
 
       dc.onerror = (err) => {
@@ -185,6 +204,25 @@ export function useVoiceSession() {
 
       // Get OpenAI's SDP answer
       const answerSdp = await sdpResponse.text();
+      
+      // Get session config from response header and store it for data channel
+      const sessionConfigHeader = sdpResponse.headers.get('X-Session-Config');
+      if (sessionConfigHeader) {
+        try {
+          sessionConfigToSend = JSON.parse(sessionConfigHeader);
+          // If data channel is already open, send config immediately
+          if (dc.readyState === 'open') {
+            const sessionUpdateEvent = {
+              type: 'session.update',
+              ...sessionConfigToSend
+            };
+            dc.send(JSON.stringify(sessionUpdateEvent));
+            console.log('Sent session configuration to OpenAI (channel already open)');
+          }
+        } catch (e) {
+          console.error('Failed to parse session config from header:', e);
+        }
+      }
       
       // Set remote description with OpenAI's answer
       const answer = {
