@@ -7,7 +7,6 @@ from app.config import settings
 from app.routes.realtime import router as realtime_router
 from app.routes.events import router as events_router
 from app.services.rag_client import rag_client
-from app.services.openai_gateway import openai_gateway
 
 # Configure logging
 logging.basicConfig(
@@ -35,55 +34,35 @@ app.include_router(events_router, prefix="/api", tags=["events"])
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
-    """Health check endpoint - checks backend and external services"""
+    """Health check endpoint - checks backend and RAG service"""
     try:
         logger.info("Health check endpoint accessed")
-        
-        # Check external services in parallel
-        rag_status, openai_status = await asyncio.gather(
-            rag_client.check_health(),
-            openai_gateway.check_health(),
-            return_exceptions=True
-        )
-        
-        # Handle exceptions from health checks
-        if isinstance(rag_status, Exception):
-            logger.error(f"RAG service health check exception: {rag_status}")
+
+        # Check RAG service
+        try:
+            rag_status = await rag_client.check_health()
+        except Exception as e:
+            logger.error(f"RAG service health check exception: {e}")
             rag_status = {
                 "status": "error",
                 "url": settings.rag_service_url,
-                "details": {"error": str(rag_status)[:100]}
+                "details": {"error": str(e)[:100]}
             }
-        
-        if isinstance(openai_status, Exception):
-            logger.error(f"OpenAI health check exception: {openai_status}")
-            openai_status = {
-                "status": "error",
-                "api_key_configured": bool(settings.openai_api_key),
-                "details": {"error": str(openai_status)[:100]}
-            }
-        
+
         # Determine overall status
         rag_connected = rag_status.get("status") == "connected"
-        openai_connected = openai_status.get("status") == "connected"
-        
-        if rag_connected and openai_connected:
-            overall_status = "healthy"
-        elif rag_connected or openai_connected:
-            overall_status = "degraded"
-        else:
-            overall_status = "unhealthy"
-        
+        overall_status = "healthy" if rag_connected else "degraded"
+
         response_data = {
             "status": overall_status,
             "service": "backend",
             "rag_service": rag_status,
-            "openai": openai_status
+            "openai_api_key_configured": bool(settings.openai_api_key)
         }
-        
+
         logger.info(f"Health check response: status={overall_status}")
         return JSONResponse(content=response_data, status_code=status.HTTP_200_OK)
-        
+
     except Exception as e:
         logger.error(f"Error in health check endpoint: {e}", exc_info=True)
         return JSONResponse(
@@ -91,8 +70,7 @@ async def health_check():
                 "status": "error",
                 "service": "backend",
                 "error": str(e),
-                "rag_service": {"status": "unknown"},
-                "openai": {"status": "unknown"}
+                "rag_service": {"status": "unknown"}
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
