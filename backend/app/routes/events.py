@@ -43,7 +43,7 @@ async def websocket_events(websocket: WebSocket, session_id: str):
     """
     WebSocket endpoint for handling function call execution and RAG integration.
     
-    With function calling enabled, OpenAI Realtime API calls the search_knowledge_base
+    With function calling enabled, OpenAI Realtime API calls the rag_knowledge
     function when needed. Frontend sends function call requests to this endpoint,
     backend executes them via RAG service, and sends results back to frontend.
     
@@ -67,7 +67,7 @@ async def websocket_events(websocket: WebSocket, session_id: str):
                     
                     # Note: With function calling, RAG queries are handled via function calls
                     # This transcription handler is kept for fallback/backward compatibility
-                    # In the new flow, OpenAI will call search_knowledge_base function when needed
+                    # In the new flow, OpenAI will call rag_knowledge function when needed
                 
                 elif message_type == "function_call":
                     # Handle function call execution request
@@ -77,7 +77,7 @@ async def websocket_events(websocket: WebSocket, session_id: str):
                     
                     logger.info(f"Received function call request: {function_name} (call_id: {call_id})")
                     
-                    if function_name == "search_knowledge_base":
+                    if function_name == "rag_knowledge":
                         try:
                             query = arguments.get("query", "")
                             if not query:

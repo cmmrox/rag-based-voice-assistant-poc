@@ -63,21 +63,21 @@ async def create_realtime_session(request: Request):
             "tools": [
                 {
                     "type": "function",
-                    "name": "search_knowledge_base",
-                    "description": "Search the knowledge base for relevant information to answer user questions. Use this when you need specific information from documents or when the user asks about something that might be in the knowledge base.",
+                    "name": "rag_knowledge",
+                    "description": "Retrieve information from the RAG (Retrieval-Augmented Generation) knowledge base. Use this function when you need specific information from documents, knowledge base, or when the user asks questions that require information retrieval from stored knowledge.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "The search query to find relevant information from the knowledge base"
+                                "description": "The search query to find relevant information from the RAG knowledge base"
                             }
                         },
                         "required": ["query"]
                     }
                 }
             ],
-            "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the search_knowledge_base function to retrieve relevant context before answering."
+            "instructions": "You are a helpful voice assistant. When users ask questions that might require information from documents or a knowledge base, use the rag_knowledge function to retrieve relevant context before answering."
         }
         
         # Forward SDP to OpenAI with correct Content-Type and query parameters

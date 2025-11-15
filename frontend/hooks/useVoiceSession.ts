@@ -10,17 +10,37 @@ export interface TranscriptMessage {
   timestamp: string;
 }
 
+// RAG Knowledge function definition - defined directly in frontend to avoid CORS header issues
+const ragKnowledgeTool = {
+  type: 'function',
+  name: 'rag_knowledge',
+  description: 'Retrieve information from the RAG (Retrieval-Augmented Generation) knowledge base. Use this function when you need specific information from documents, knowledge base, or when the user asks questions that require information retrieval from stored knowledge.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'The search query to find relevant information from the RAG knowledge base'
+      }
+    },
+    required: ['query']
+  }
+};
+
 export function useVoiceSession() {
   const [status, setStatus] = useState<SessionStatus>('idle');
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [functionRegistered, setFunctionRegistered] = useState(false);
+  const [events, setEvents] = useState<any[]>([]);
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const websocketRef = useRef<WebSocket | null>(null);
+  const functionRegisteredRef = useRef<boolean>(false);
 
   const addTranscriptMessage = useCallback((role: 'user' | 'assistant', text: string) => {
     setTranscript(prev => [...prev, {
@@ -68,15 +88,37 @@ export function useVoiceSession() {
       // Set up data channel for sending and receiving events
       const dc = pc.createDataChannel("oai-events");
       dataChannelRef.current = dc;
-      
-      // Store session config to be sent when data channel opens
-      let sessionConfigToSend: any = null;
 
       // Listen for server events from OpenAI
       dc.onmessage = async (event) => {
         try {
           const eventData = JSON.parse(event.data);
           console.log('Received event from OpenAI:', eventData);
+          
+          // Store all events for comprehensive function call detection
+          setEvents(prev => [eventData, ...prev]);
+          
+          // Handle session.created - register function after session is created
+          if (eventData.type === 'session.created' && !functionRegisteredRef.current) {
+            console.log('[RAG] Session created, registering rag_knowledge function');
+            
+            if (dc.readyState === 'open') {
+              const sessionUpdate = {
+                type: 'session.update',
+                session: {
+                  type: 'realtime',
+                  tools: [ragKnowledgeTool],
+                  tool_choice: 'auto'
+                }
+              };
+              dc.send(JSON.stringify(sessionUpdate));
+              functionRegisteredRef.current = true;
+              setFunctionRegistered(true);
+              console.log('[RAG] Function registered successfully');
+            } else {
+              console.warn('[RAG] Data channel not open when session.created received');
+            }
+          }
           
           // Handle different event types
           if (eventData.type === 'conversation.item.input_audio_transcription.completed') {
@@ -86,23 +128,58 @@ export function useVoiceSession() {
             // Note: With function calling, RAG queries are handled via function calls
             // No need to manually trigger RAG query here
           } 
-          // Handle function call events
-          else if (eventData.type === 'conversation.item.completed') {
-            const item = eventData.item;
-            if (item && item.type === 'function_call') {
-              console.log('Function call completed:', item);
+          // Comprehensive function call detection
+          else {
+            let foundFunctionCall = null;
+            
+            // Check 1: response.done with response.output array
+            if (eventData.type === 'response.done' && eventData.response?.output) {
+              console.log('[RAG] Checking response.done with output array');
+              for (const output of eventData.response.output) {
+                if (output.type === 'function_call' && output.name === 'rag_knowledge') {
+                  console.log('[RAG] Found function call in response.done.output:', output);
+                  foundFunctionCall = output;
+                  break;
+                }
+              }
+            }
+            
+            // Check 2: conversation.item.completed with function_call item
+            if (!foundFunctionCall && eventData.type === 'conversation.item.completed') {
+              const item = eventData.item;
+              if (item && item.type === 'function_call' && item.name === 'rag_knowledge') {
+                console.log('[RAG] Found function call in conversation.item.completed:', item);
+                foundFunctionCall = item;
+              }
+            }
+            
+            // Check 3: conversation.updated with function_call item
+            if (!foundFunctionCall && eventData.type === 'conversation.updated') {
+              const item = eventData.item;
+              if (item && item.type === 'function_call' && item.name === 'rag_knowledge') {
+                // Check if function call is complete (has all arguments)
+                if (item.status === 'completed' || (item.arguments && typeof item.arguments === 'string' && item.arguments.length > 0)) {
+                  console.log('[RAG] Found completed function call in conversation.updated:', item);
+                  foundFunctionCall = item;
+                }
+              }
+            }
+            
+            // Handle detected function call
+            if (foundFunctionCall) {
+              console.log('[RAG] Processing function call:', foundFunctionCall);
               setStatus('processing');
               
               // Parse function arguments (they might come as a string)
               let functionArgs = {};
               try {
-                if (typeof item.arguments === 'string') {
-                  functionArgs = JSON.parse(item.arguments);
-                } else if (item.arguments) {
-                  functionArgs = item.arguments;
+                if (typeof foundFunctionCall.arguments === 'string') {
+                  functionArgs = JSON.parse(foundFunctionCall.arguments);
+                } else if (foundFunctionCall.arguments) {
+                  functionArgs = foundFunctionCall.arguments;
                 }
               } catch (e) {
-                console.error('Error parsing function arguments:', e);
+                console.error('[RAG] Error parsing function arguments:', e);
                 functionArgs = {};
               }
               
@@ -110,25 +187,19 @@ export function useVoiceSession() {
               if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
                 websocketRef.current.send(JSON.stringify({
                   type: 'function_call',
-                  call_id: item.id || item.call_id,
-                  function_name: item.name,
+                  call_id: foundFunctionCall.id || foundFunctionCall.call_id,
+                  function_name: foundFunctionCall.name,
                   arguments: functionArgs
                 }));
+                console.log('[RAG] Sent function call to backend:', foundFunctionCall.name);
+              } else {
+                console.error('[RAG] WebSocket not available for function call execution');
               }
             }
           }
-          // Handle function call updates (arguments being populated)
-          else if (eventData.type === 'conversation.updated') {
-            const item = eventData.item;
-            const delta = eventData.delta;
-            
-            if (item && item.type === 'function_call') {
-              console.log('Function call update:', item, delta);
-              // Function call arguments are being populated
-              // We'll wait for conversation.item.completed to execute
-            }
-          }
-          else if (eventData.type === 'response.audio_transcript.delta') {
+          
+          // Handle other event types
+          if (eventData.type === 'response.audio_transcript.delta') {
             const delta = eventData.delta || '';
             if (delta) {
               addTranscriptMessage('assistant', delta);
@@ -148,22 +219,8 @@ export function useVoiceSession() {
       dc.onopen = () => {
         console.log('Data channel opened');
         setStatus('connected');
-        
-        // Send session configuration to OpenAI via data channel
-        if (sessionConfigToSend) {
-          try {
-            // Send session.update event with the configuration
-            // OpenAI Realtime API expects the session config directly in the event
-            const sessionUpdateEvent = {
-              type: 'session.update',
-              ...sessionConfigToSend
-            };
-            dc.send(JSON.stringify(sessionUpdateEvent));
-            console.log('Sent session configuration to OpenAI');
-          } catch (e) {
-            console.error('Failed to send session configuration:', e);
-          }
-        }
+        // Note: Function registration will happen after session.created event
+        // Do not send session config immediately - wait for session.created
       };
 
       dc.onerror = (err) => {
@@ -205,24 +262,8 @@ export function useVoiceSession() {
       // Get OpenAI's SDP answer
       const answerSdp = await sdpResponse.text();
       
-      // Get session config from response header and store it for data channel
-      const sessionConfigHeader = sdpResponse.headers.get('X-Session-Config');
-      if (sessionConfigHeader) {
-        try {
-          sessionConfigToSend = JSON.parse(sessionConfigHeader);
-          // If data channel is already open, send config immediately
-          if (dc.readyState === 'open') {
-            const sessionUpdateEvent = {
-              type: 'session.update',
-              ...sessionConfigToSend
-            };
-            dc.send(JSON.stringify(sessionUpdateEvent));
-            console.log('Sent session configuration to OpenAI (channel already open)');
-          }
-        } catch (e) {
-          console.error('Failed to parse session config from header:', e);
-        }
-      }
+      // Note: Session config (tools) is defined directly in frontend to avoid CORS header issues
+      // Function will be registered after session.created event is received
       
       // Set remote description with OpenAI's answer
       const answer = {
@@ -259,18 +300,18 @@ export function useVoiceSession() {
               if (result.success) {
                 // Format the result for OpenAI
                 let output = '';
-                if (function_name === 'search_knowledge_base') {
+                if (function_name === 'rag_knowledge') {
                   if (result.context && result.context.trim()) {
                     output = JSON.stringify({
                       context: result.context,
                       sources: result.sources || [],
-                      message: 'Knowledge base search completed successfully'
+                      message: 'RAG knowledge retrieval completed successfully'
                     });
                   } else {
                     output = JSON.stringify({
                       context: '',
                       sources: [],
-                      message: result.message || 'No relevant information found in knowledge base'
+                      message: result.message || 'No relevant information found in RAG knowledge base'
                     });
                   }
                 } else {
@@ -386,6 +427,9 @@ export function useVoiceSession() {
     setStatus('idle');
     setSessionId(null);
     setError(null);
+    setFunctionRegistered(false);
+    setEvents([]);
+    functionRegisteredRef.current = false;
   }, []);
 
   const sendEvent = useCallback((event: object) => {
