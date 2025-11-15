@@ -13,6 +13,11 @@ The OpenAI Realtime API voice assistant was calling the `rag_knowledge` function
 
 **Solution**: Detect function calls at `response.function_call_arguments.done` which fires EARLIER when arguments are complete but before the response completes.
 
+### Third Issue (Response Conflict Fix)
+**"Conversation already has an active response in progress"** error - After sending `function_call_output`, we were calling `response.create` which tried to start a NEW response while the original was still in progress.
+
+**Solution**: Remove `response.create` call. For server-side functions, OpenAI automatically continues the existing response after receiving `function_call_output`. Only client-side display functions need manual `response.create`.
+
 ## Critical Fixes Applied
 
 ### 1. ✅ Event ID Generation (MOST CRITICAL)
@@ -131,24 +136,31 @@ if (!call_id) {
 
 ---
 
-### 4. ✅ Response Timing Delay
-**File:** `frontend/hooks/useVoiceSession.ts` (Lines 423-433)
+### 4. ✅ Automatic Response Continuation (NO response.create Needed)
+**File:** `frontend/hooks/useVoiceSession.ts` (Lines 476-483, 497-502)
 
 **What Changed:**
 ```typescript
-// BEFORE (BROKEN)
-dataChannelRef.current.send(JSON.stringify(functionOutput));
-dataChannelRef.current.send(JSON.stringify(responseCreate)); // Immediate!
-
-// AFTER (FIXED)
+// BEFORE (WRONG - causes "active response in progress" error)
 dataChannelRef.current.send(JSON.stringify(functionOutput));
 setTimeout(() => {
-  dataChannelRef.current.send(JSON.stringify(responseCreate));
-}, 200); // 200ms delay
+  dataChannelRef.current.send(JSON.stringify({
+    type: 'response.create',
+    event_id: crypto.randomUUID()
+  }));
+}, 200);
+
+// AFTER (CORRECT - let OpenAI continue automatically)
+dataChannelRef.current.send(JSON.stringify(functionOutput));
+console.log('[RAG] ✓ OpenAI will automatically continue response with function output');
+// That's it! No response.create needed.
 ```
 
 **Why It Matters:**
-OpenAI needs time to process the function output before generating a response. Immediate `response.create` causes it to respond without the function result.
+- For **server-side functions** (like RAG), OpenAI automatically continues the existing response after receiving `function_call_output`
+- Sending `response.create` tries to start a **NEW** response, causing "Conversation already has an active response in progress" error
+- The reference implementation sends `response.create` because their function is **client-side only** (just displays colors, doesn't send output back)
+- Our RAG function is **server-side** - different pattern required
 
 ---
 
@@ -278,16 +290,18 @@ Frontend receives result ←─────────────────�
 Frontend sends to OpenAI:
   1. conversation.item.create (function_call_output) with event_id ✓
        ↓ (item_id still VALID because we detected early!)
-  [200ms delay] ← CRITICAL!
        ↓
-  2. response.create with event_id ✓
+OpenAI automatically integrates function output ✓
+       ↓ (no manual response.create needed!)
        ↓
 OpenAI generates response with RAG context ✓
        ↓
 Agent speaks answer with RAG knowledge! 🎤✅
 ```
 
-**KEY CHANGE**: Now detecting at `response.function_call_arguments.done` (before response completes) instead of `response.done` (after completion). This ensures `item_id` is still valid when sending `function_call_output`.
+**KEY CHANGES**:
+1. Now detecting at `response.function_call_arguments.done` (before response completes) instead of `response.done` (after completion). This ensures `item_id` is still valid when sending `function_call_output`.
+2. Removed `response.create` call - OpenAI automatically continues the response after receiving `function_call_output` for server-side functions.
 
 ---
 

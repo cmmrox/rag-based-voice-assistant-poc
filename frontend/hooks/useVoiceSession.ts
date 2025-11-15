@@ -15,14 +15,17 @@
  *    - By detecting early, we can send function_call_output while item_id is still valid
  *    - Fallback checks: response.done, response.function_call, conversation.item.completed, etc.
  *
- * 3. ROBUST CALL_ID EXTRACTION: Prioritizes item_id field
- *    - item_id (from response.function_call_arguments.done) is most reliable
- *    - Falls back to: call_id, id
+ * 3. ROBUST CALL_ID EXTRACTION: Prioritizes call_id field (CRITICAL!)
+ *    - call_id is the actual function call ID (required for function_call_output)
+ *    - item_id is the conversation item ID (different from call_id)
+ *    - Priority: call_id > id > item_id (as last resort)
  *    - Deduplication prevents processing same call multiple times
  *
- * 4. RESPONSE TIMING: 200ms delay before response.create
- *    - Ensures function_call_output is processed before triggering response
- *    - Critical for OpenAI to properly integrate function results
+ * 4. NEW RESPONSE CREATION AFTER FUNCTION OUTPUT: response.create with delay
+ *    - Due to backend latency, original response completes (response.done) before function result returns
+ *    - After sending function_call_output, we create a NEW response to use that output
+ *    - 100ms delay ensures function_call_output is processed before new response starts
+ *    - This is different from "active response" error - that response has already completed
  *
  * 5. TIMEOUT HANDLING: 30-second timeout for function execution
  *    - Prevents hanging if backend doesn't respond
@@ -175,14 +178,35 @@ export function useVoiceSession() {
             // Critical for avoiding "Tool call ID not found" error
             if (eventData.type === 'response.function_call_arguments.done') {
               if (eventData.name === 'rag_knowledge') {
-                console.log('[RAG] ✓✓✓ Found function call in response.function_call_arguments.done (EARLY DETECTION)');
-                console.log('[RAG] Event details:', {
-                  item_id: eventData.item_id,
-                  name: eventData.name,
-                  call_id: eventData.call_id,
-                  arguments: eventData.arguments
-                });
-                foundFunctionCall = eventData;
+                // CRITICAL: Validate that arguments are complete and valid JSON before processing
+                // Sometimes this event fires with incomplete/malformed arguments
+                try {
+                  if (eventData.arguments && typeof eventData.arguments === 'string') {
+                    const parsedArgs = JSON.parse(eventData.arguments);
+
+                    // Verify arguments are not empty and have required fields
+                    if (parsedArgs && Object.keys(parsedArgs).length > 0) {
+                      console.log('[RAG] ✓✓✓ Found function call with VALID arguments (EARLY DETECTION)');
+                      console.log('[RAG] Event details:', {
+                        item_id: eventData.item_id,
+                        name: eventData.name,
+                        call_id: eventData.call_id,
+                        arguments: eventData.arguments,
+                        parsed: parsedArgs
+                      });
+                      foundFunctionCall = eventData;
+                    } else {
+                      console.log('[RAG] ⚠ Arguments are empty, will use fallback detection at response.done');
+                    }
+                  } else {
+                    console.log('[RAG] ⚠ Arguments not ready yet, will use fallback detection at response.done');
+                  }
+                } catch (parseError) {
+                  console.warn('[RAG] ⚠ Arguments not valid JSON yet, will use fallback detection at response.done');
+                  console.warn('[RAG] Invalid arguments:', eventData.arguments);
+                  console.warn('[RAG] Parse error:', parseError.message);
+                  // Don't set foundFunctionCall - let response.done handle it with complete arguments
+                }
               }
             }
 
@@ -247,8 +271,9 @@ export function useVoiceSession() {
             // Handle detected function call
             if (foundFunctionCall) {
               // Extract call_id robustly (different event types use different field names)
-              // PRIORITY: item_id is used by response.function_call_arguments.done (most reliable)
-              const call_id = foundFunctionCall.item_id || foundFunctionCall.call_id || foundFunctionCall.id;
+              // CRITICAL: Use call_id field first (actual function call ID)
+              // item_id is the conversation item ID, NOT the function call ID
+              const call_id = foundFunctionCall.call_id || foundFunctionCall.id || foundFunctionCall.item_id;
 
               if (!call_id) {
                 console.error('[RAG] ✗ No call_id found in function call:', foundFunctionCall);
@@ -257,8 +282,8 @@ export function useVoiceSession() {
               }
 
               console.log('[RAG] ✓ Extracted call_id:', call_id, 'from field:',
-                foundFunctionCall.item_id ? 'item_id' :
-                foundFunctionCall.call_id ? 'call_id' : 'id');
+                foundFunctionCall.call_id ? 'call_id' :
+                foundFunctionCall.id ? 'id' : 'item_id');
 
               // Deduplication: Check if we've already processed this call_id
               if (processedCallIdsRef.current.has(call_id)) {
@@ -279,10 +304,21 @@ export function useVoiceSession() {
                 } else if (foundFunctionCall.arguments) {
                   functionArgs = foundFunctionCall.arguments;
                 }
-                console.log('[RAG] Parsed arguments:', functionArgs);
+                console.log('[RAG] ✓ Parsed arguments:', functionArgs);
               } catch (e) {
-                console.error('[RAG] ✗ Error parsing function arguments:', e);
+                console.error('[RAG] ✗ Error parsing function arguments:', e.message);
+                console.error('[RAG] ✗ Raw arguments string:', foundFunctionCall.arguments);
+                console.error('[RAG] ✗ This should not happen if early detection validation worked');
                 functionArgs = {};
+              }
+
+              // Validate arguments are not empty before sending to backend
+              if (!functionArgs || Object.keys(functionArgs).length === 0) {
+                console.error('[RAG] ✗ Arguments are empty, cannot execute function');
+                console.error('[RAG] ✗ Skipping backend call');
+                // Remove from processed set so it can be retried if response.done provides valid args
+                processedCallIdsRef.current.delete(call_id);
+                return;
               }
 
               // Send function call to backend for execution
@@ -315,15 +351,19 @@ export function useVoiceSession() {
                       }
                     };
                     dataChannelRef.current.send(JSON.stringify(errorOutput));
-                    // Trigger response
+                    console.log('[RAG] → Sent timeout error to OpenAI');
+
+                    // Create NEW response to handle the timeout error
                     setTimeout(() => {
                       if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
-                        dataChannelRef.current.send(JSON.stringify({
+                        const responseCreate = {
                           type: 'response.create',
                           event_id: crypto.randomUUID()
-                        }));
+                        };
+                        dataChannelRef.current.send(JSON.stringify(responseCreate));
+                        console.log('[RAG] → Created new response to handle timeout error');
                       }
-                    }, 200);
+                    }, 100);
                   }
                 }, 30000);
               } else {
@@ -476,17 +516,19 @@ export function useVoiceSession() {
                 dataChannelRef.current.send(JSON.stringify(functionOutput));
                 console.log('[RAG] → Sent function_call_output to OpenAI, event_id:', functionOutput.event_id);
 
-                // CRITICAL: Add delay before response.create (following reference implementation)
+                // CRITICAL: Create NEW response to use the function output
+                // Due to backend latency, the original response has already completed (response.done)
+                // We need to explicitly create a new response that will use the function_call_output
                 setTimeout(() => {
                   if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
                     const responseCreate = {
                       type: 'response.create',
-                      event_id: crypto.randomUUID() // CRITICAL: event_id required!
+                      event_id: crypto.randomUUID()
                     };
                     dataChannelRef.current.send(JSON.stringify(responseCreate));
-                    console.log('[RAG] → Triggered response.create, event_id:', responseCreate.event_id);
+                    console.log('[RAG] → Created new response to use function output, event_id:', responseCreate.event_id);
                   }
-                }, 200); // 200ms delay to ensure function_call_output is processed first
+                }, 100); // Small delay to ensure function_call_output is processed first
               } else {
                 // Send error result with event_id
                 const errorOutput = {
@@ -503,7 +545,7 @@ export function useVoiceSession() {
                 dataChannelRef.current.send(JSON.stringify(errorOutput));
                 console.log('[RAG] → Sent error output to OpenAI, event_id:', errorOutput.event_id);
 
-                // Still trigger response so model can handle the error (with delay)
+                // Create NEW response to handle the error
                 setTimeout(() => {
                   if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
                     const responseCreate = {
@@ -511,9 +553,9 @@ export function useVoiceSession() {
                       event_id: crypto.randomUUID()
                     };
                     dataChannelRef.current.send(JSON.stringify(responseCreate));
-                    console.log('[RAG] → Triggered response.create for error, event_id:', responseCreate.event_id);
+                    console.log('[RAG] → Created new response to handle error, event_id:', responseCreate.event_id);
                   }
-                }, 200);
+                }, 100);
               }
             }
           }
