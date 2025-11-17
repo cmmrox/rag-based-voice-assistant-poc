@@ -32,7 +32,7 @@ export function sendFunctionOutput(
   dataChannel.send(JSON.stringify(functionOutput));
   console.log('[RAG] → Sent function_call_output to OpenAI, event_id:', functionOutput.event_id);
 
-  return functionOutput.event_id;
+  return functionOutput.event_id!;
 }
 
 /**

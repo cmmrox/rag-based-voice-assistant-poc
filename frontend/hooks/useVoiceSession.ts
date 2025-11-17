@@ -53,7 +53,6 @@ import {
   extractCallId,
   parseFunctionArguments,
   validateFunctionArguments,
-  formatRagResult,
 } from '@/utils/functionCalls';
 import {
   createAudioElement,
@@ -63,7 +62,7 @@ import {
   stopMediaStream,
   stopAudioPlayback,
 } from '@/utils/webrtc';
-import { generateWebSocketUrl, sendFunctionCallToBackend } from '@/utils/websocket';
+import { executeFunctionCall, formatRagResult as formatRagResultFromClient } from '@/utils/ragClient';
 
 /**
  * Custom hook for managing OpenAI Realtime API voice sessions
@@ -72,7 +71,7 @@ import { generateWebSocketUrl, sendFunctionCallToBackend } from '@/utils/websock
  * - WebRTC connection setup and teardown
  * - Audio stream management (microphone input and speaker output)
  * - OpenAI event handling via data channel
- * - RAG function calling integration via WebSocket
+ * - RAG function calling integration via REST API
  * - Session state management and error handling
  *
  * @returns Object containing session state and control functions
@@ -89,7 +88,6 @@ export function useVoiceSession() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
-  const websocketRef = useRef<WebSocket | null>(null);
 
   // Function call management refs
   const functionRegisteredRef = useRef<boolean>(false);
@@ -249,36 +247,47 @@ export function useVoiceSession() {
           return;
         }
 
-        // Send function call to backend for execution
-        if (websocketRef.current && websocketRef.current.readyState === WebSocket.OPEN) {
-          sendFunctionCallToBackend(
-            websocketRef.current,
-            callId,
-            detectedFunctionCall.name,
-            functionArgs
-          );
+        // Execute function call via REST API
+        executeFunctionCall(callId, detectedFunctionCall.name, functionArgs as { query: string })
+          .then((response) => {
+            // Clear timeout since we got a response
+            if (functionTimeoutRef.current) {
+              clearTimeout(functionTimeoutRef.current);
+              functionTimeoutRef.current = null;
+            }
 
-          // Set timeout for function execution
-          if (functionTimeoutRef.current) {
-            clearTimeout(functionTimeoutRef.current);
-          }
+            console.log('[RAG] ← Function result received for call_id:', response.call_id);
 
-          functionTimeoutRef.current = setTimeout(() => {
-            console.error('[RAG] ✗ Function execution timeout for call_id:', callId);
+            if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
+              // Format the result for OpenAI
+              const output = formatRagResultFromClient(response.result);
+
+              // Send function call output to OpenAI
+              sendFunctionOutput(dataChannelRef.current, callId, output);
+
+              // Create NEW response to use the function output
+              createNewResponse(dataChannelRef.current, FUNCTION_OUTPUT_DELAY_MS);
+            }
+          })
+          .catch((error) => {
+            // Clear timeout on error
+            if (functionTimeoutRef.current) {
+              clearTimeout(functionTimeoutRef.current);
+              functionTimeoutRef.current = null;
+            }
+
+            console.error('[RAG] ✗ Function call error:', error);
 
             // Send error response to OpenAI
             if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
               const errorOutput = JSON.stringify({
-                error: 'Function execution timeout after 30 seconds',
+                error: error instanceof Error ? error.message : 'Function execution failed',
               });
 
               sendFunctionOutput(dataChannelRef.current, callId, errorOutput);
               createNewResponse(dataChannelRef.current);
             }
-          }, FUNCTION_CALL_TIMEOUT_MS);
-        } else {
-          console.error('[RAG] ✗ WebSocket not available for function call execution');
-        }
+          });
       }
     },
     []
@@ -351,51 +360,10 @@ export function useVoiceSession() {
     [addTranscriptMessage, handleFunctionCall]
   );
 
-  /**
-   * Handles WebSocket messages from the backend (RAG function results)
-   *
-   * @param event - The message event from the WebSocket
-   */
-  const handleWebSocketMessage = useCallback(async (event: MessageEvent) => {
-    try {
-      const message = JSON.parse(event.data);
-      console.log('[WebSocket] ← Received from backend:', message.type);
-
-      // Handle function call results
-      if (message.type === 'function_call_result') {
-        const { call_id, function_name, result } = message;
-
-        // Clear timeout since we got a response
-        if (functionTimeoutRef.current) {
-          clearTimeout(functionTimeoutRef.current);
-          functionTimeoutRef.current = null;
-        }
-
-        console.log('[RAG] ← Function result received for call_id:', call_id);
-
-        if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
-          // Format the result for OpenAI
-          const output = formatRagResult(result);
-
-          // Send function call output to OpenAI
-          sendFunctionOutput(dataChannelRef.current, call_id, output);
-
-          // Create NEW response to use the function output
-          createNewResponse(dataChannelRef.current, FUNCTION_OUTPUT_DELAY_MS);
-        }
-      } else if (message.type === 'rag_error') {
-        console.error('[RAG] ✗ RAG service error:', message.error);
-      } else if (message.type === 'error') {
-        console.error('[Backend] ✗ Error:', message.error);
-      }
-    } catch (err) {
-      console.error('[WebSocket] ✗ Error processing message:', err);
-    }
-  }, []);
 
   /**
    * Starts a new voice session
-   * Sets up WebRTC connection, audio streams, data channel, and WebSocket
+   * Sets up WebRTC connection, audio streams, and data channel
    */
   const startSession = useCallback(async () => {
     try {
@@ -485,34 +453,13 @@ export function useVoiceSession() {
       // Generate a session ID for tracking
       const newSessionId = crypto.randomUUID();
       setSessionId(newSessionId);
-
-      // Connect to backend WebSocket for RAG integration
-      const websocketUrl = generateWebSocketUrl(BACKEND_URL, newSessionId);
-      const websocket = new WebSocket(websocketUrl);
-
-      websocket.onopen = () => {
-        console.log('WebSocket connected for RAG integration');
-      };
-
-      websocket.onmessage = handleWebSocketMessage;
-
-      websocket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        // Don't fail the session if WebSocket fails - RAG is optional
-      };
-
-      websocket.onclose = () => {
-        console.log('WebSocket closed');
-      };
-
-      websocketRef.current = websocket;
     } catch (err) {
       console.error('Error starting session:', err);
       setError(err instanceof Error ? err.message : 'Failed to start session');
       setStatus('error');
       stopSession();
     }
-  }, [handleDataChannelMessage, handleWebSocketMessage]);
+  }, [handleDataChannelMessage]);
 
   /**
    * Stops the current voice session
@@ -525,12 +472,6 @@ export function useVoiceSession() {
     if (functionTimeoutRef.current) {
       clearTimeout(functionTimeoutRef.current);
       functionTimeoutRef.current = null;
-    }
-
-    // Close WebSocket connection
-    if (websocketRef.current) {
-      websocketRef.current.close();
-      websocketRef.current = null;
     }
 
     // Stop local stream

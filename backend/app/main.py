@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes.realtime import router as realtime_router
-from app.routes.events import router as events_router
+from app.routes.rag_function import router as rag_function_router
 from app.services.rag_client import rag_client
 
 # Configure logging
@@ -29,7 +29,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(realtime_router, prefix="/api", tags=["realtime"])
-app.include_router(events_router, prefix="/api", tags=["events"])
+app.include_router(rag_function_router, tags=["rag"])
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)

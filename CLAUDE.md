@@ -58,21 +58,17 @@ cd rag-service && pytest
 
 ### Communication Flow
 
-The system uses a sophisticated multi-channel architecture:
+The system uses a two-channel architecture:
 
 1. **WebRTC Direct Connection** (Frontend ↔ OpenAI)
    - SDP exchange via backend proxy (`POST /api/realtime/session`)
    - Audio streams directly between browser and OpenAI
    - Data channel for OpenAI events (transcriptions, function calls, errors)
 
-2. **WebSocket Connection** (Frontend ↔ Backend)
-   - Endpoint: `WS /api/ws/events/{session_id}`
-   - Handles function call execution flow
-   - Backend acts as orchestrator for RAG queries
-
-3. **HTTP Communication** (Backend ↔ RAG Service)
-   - RAG queries: `POST /api/rag/query`
-   - Document ingestion: `POST /api/documents/ingest`
+2. **HTTP REST APIs** (Frontend ↔ Backend ↔ RAG Service)
+   - RAG function calls: `POST /api/rag/function-call` (Frontend → Backend)
+   - RAG queries: `POST /api/rag/query` (Backend → RAG Service)
+   - Document ingestion: `POST /api/documents/ingest` (Backend → RAG Service)
 
 ### Function Calling Flow
 
@@ -82,19 +78,20 @@ The system uses a sophisticated multi-channel architecture:
 2. User asks question requiring knowledge base
 3. OpenAI decides to call `rag_knowledge` function
 4. Function call sent via WebRTC data channel → Frontend
-5. Frontend forwards to Backend via WebSocket (`type: "function_call"`)
-6. Backend queries RAG service via HTTP
+5. Frontend sends REST API request to Backend (`POST /api/rag/function-call`)
+6. Backend queries RAG service via HTTP (`POST /api/rag/query`)
 7. RAG service generates embeddings and searches ChromaDB
-8. Results flow back: RAG → Backend → Frontend → OpenAI (via data channel)
-9. OpenAI formulates final answer and speaks to user
+8. Results flow back: RAG → Backend → Frontend (as REST response)
+9. Frontend sends function output to OpenAI via data channel
+10. OpenAI formulates final answer and speaks to user
 
 ### Session Management
 
 **Important**: Sessions are client-side only. No server-side session storage.
 
-- Backend is stateless except for active WebSocket connections
+- Backend is completely stateless
 - `session_id` is generated client-side (`crypto.randomUUID()`)
-- Used only for WebSocket connection tracking (`ConnectionManager` in `backend/app/routes/events.py`)
+- Used only for client-side tracking and logging
 
 ### WebRTC Data Channel Events
 
@@ -117,7 +114,7 @@ The frontend (`useVoiceSession.ts`) handles these OpenAI event types:
 - Complete WebRTC lifecycle management
 - Data channel event handling
 - Function call detection (multi-strategy with deduplication)
-- WebSocket communication with backend
+- REST API communication with backend for RAG queries
 - State management for session status
 
 **Important Patterns**:
@@ -129,7 +126,7 @@ The frontend (`useVoiceSession.ts`) handles these OpenAI event types:
 **Utils Structure**:
 - `utils/functionCalls.ts` - Function calling logic
 - `utils/webrtc.ts` - WebRTC connection management
-- `utils/websocket.ts` - WebSocket helpers
+- `utils/ragClient.ts` - REST API client for RAG function calls
 
 **Constants**:
 - `constants/api.ts` - Backend URL, OpenAI model
@@ -147,10 +144,10 @@ The frontend (`useVoiceSession.ts`) handles these OpenAI event types:
   - Validates SDP format
   - Adds model and voice query parameters
   - Returns session config in `X-Session-Config` header
-- `routes/events.py` - WebSocket handler (`/ws/events/{session_id}`)
-  - ConnectionManager for WebSocket lifecycle
-  - Handles `function_call` messages from frontend
+- `routes/rag_function.py` - REST API handler for RAG function calls (`/api/rag/function-call`)
+  - Receives function call requests from frontend
   - Queries RAG service and returns results
+  - Handles errors and formats responses
 
 **Services**:
 - `services/rag_client.py` - HTTP client for RAG service
@@ -220,7 +217,7 @@ RAG_PORT=8001
 1. **Constants First**: Never use magic numbers. Add to appropriate constants file.
 2. **Error Handling**: Use centralized error utilities (`utils/errors.py`)
 3. **Type Safety**: Full TypeScript in frontend, type hints in Python
-4. **Logging**: Use structured logging with clear prefixes (`[RAG]`, `[WebSocket]`, etc.)
+4. **Logging**: Use structured logging with clear prefixes (`[RAG]`, `[REST]`, etc.)
 5. **Validation**: Use validation utilities before processing data
 
 ### Testing Patterns (When Adding Tests)
@@ -268,8 +265,9 @@ RAG_PORT=8001
 ### Function calling not working
 1. Check function registration (should happen at `session.created`)
 2. Verify data channel is open when registering
-3. Confirm WebSocket connection to backend is active
+3. Confirm backend REST API endpoint is accessible (`/api/rag/function-call`)
 4. Check RAG service is accessible from backend
+5. Verify network connectivity between frontend and backend
 
 ### WebRTC connection fails
 - Verify OpenAI API key has Realtime API access
