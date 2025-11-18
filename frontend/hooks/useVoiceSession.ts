@@ -41,7 +41,7 @@ import { useState, useRef, useCallback } from 'react';
 import type { SessionStatus, TranscriptMessage } from '@/types/session';
 import type { OpenAIEvent } from '@/types/openai';
 import { BACKEND_URL, OPENAI_MODEL } from '@/constants/api';
-import { RAG_KNOWLEDGE_TOOL } from '@/constants/tools';
+import { RAG_KNOWLEDGE_TOOL, NOTES_TOOL } from '@/constants/tools';
 import {
   FUNCTION_OUTPUT_DELAY_MS,
   FUNCTION_CALL_TIMEOUT_MS,
@@ -63,6 +63,7 @@ import {
   stopAudioPlayback,
 } from '@/utils/webrtc';
 import { executeFunctionCall, formatRagResult as formatRagResultFromClient } from '@/utils/ragClient';
+import { executeNotesFunction, formatNotesResult } from '@/utils/notesClient';
 
 /**
  * Custom hook for managing OpenAI Realtime API voice sessions
@@ -125,7 +126,7 @@ export function useVoiceSession() {
       // This fires when arguments are complete but BEFORE response.done
       // Critical for avoiding "Tool call ID not found" error
       if (eventData.type === 'response.function_call_arguments.done') {
-        if (eventData.name === 'rag_knowledge') {
+        if (eventData.name === 'rag_knowledge' || eventData.name === 'manage_notes') {
           // CRITICAL: Validate that arguments are complete and valid JSON before processing
           try {
             if (eventData.arguments && typeof eventData.arguments === 'string') {
@@ -133,8 +134,9 @@ export function useVoiceSession() {
 
               // Verify arguments are not empty and have required fields
               if (parsedArgs && Object.keys(parsedArgs).length > 0) {
-                console.log('[RAG] ✓✓✓ Found function call with VALID arguments (EARLY DETECTION)');
-                console.log('[RAG] Event details:', {
+                const funcType = eventData.name === 'manage_notes' ? 'Notes' : 'RAG';
+                console.log(`[${funcType}] ✓✓✓ Found function call with VALID arguments (EARLY DETECTION)`);
+                console.log(`[${funcType}] Event details:`, {
                   item_id: eventData.item_id,
                   name: eventData.name,
                   call_id: eventData.call_id,
@@ -143,25 +145,29 @@ export function useVoiceSession() {
                 });
                 detectedFunctionCall = eventData;
               } else {
-                console.log('[RAG] ⚠ Arguments are empty, will use fallback detection at response.done');
+                const funcType = eventData.name === 'manage_notes' ? 'Notes' : 'RAG';
+                console.log(`[${funcType}] ⚠ Arguments are empty, will use fallback detection at response.done`);
               }
             } else {
-              console.log('[RAG] ⚠ Arguments not ready yet, will use fallback detection at response.done');
+              const funcType = eventData.name === 'manage_notes' ? 'Notes' : 'RAG';
+              console.log(`[${funcType}] ⚠ Arguments not ready yet, will use fallback detection at response.done`);
             }
           } catch (parseError: any) {
-            console.warn('[RAG] ⚠ Arguments not valid JSON yet, will use fallback detection at response.done');
-            console.warn('[RAG] Invalid arguments:', eventData.arguments);
-            console.warn('[RAG] Parse error:', parseError.message);
+            const funcType = eventData.name === 'manage_notes' ? 'Notes' : 'RAG';
+            console.warn(`[${funcType}] ⚠ Arguments not valid JSON yet, will use fallback detection at response.done`);
+            console.warn(`[${funcType}] Invalid arguments:`, eventData.arguments);
+            console.warn(`[${funcType}] Parse error:`, parseError.message);
           }
         }
       }
 
       // Check 1: response.done with response.output array (FALLBACK)
       if (!detectedFunctionCall && eventData.type === 'response.done' && eventData.response?.output) {
-        console.log('[RAG] Checking response.done with output array');
+        console.log('[Functions] Checking response.done with output array');
         for (const output of eventData.response.output) {
-          if (output.type === 'function_call' && output.name === 'rag_knowledge') {
-            console.log('[RAG] ✓ Found function call in response.done.output');
+          if (output.type === 'function_call' && (output.name === 'rag_knowledge' || output.name === 'manage_notes')) {
+            const funcType = output.name === 'manage_notes' ? 'Notes' : 'RAG';
+            console.log(`[${funcType}] ✓ Found function call in response.done.output`);
             detectedFunctionCall = output;
             break;
           }
@@ -170,16 +176,18 @@ export function useVoiceSession() {
 
       // Check 2: response.function_call event
       if (!detectedFunctionCall && eventData.type === 'response.function_call') {
-        if (eventData.name === 'rag_knowledge') {
-          console.log('[RAG] ✓ Found function call in response.function_call event');
+        if (eventData.name === 'rag_knowledge' || eventData.name === 'manage_notes') {
+          const funcType = eventData.name === 'manage_notes' ? 'Notes' : 'RAG';
+          console.log(`[${funcType}] ✓ Found function call in response.function_call event`);
           detectedFunctionCall = eventData;
         }
       }
 
       // Check 3: response.function_call.done event
       if (!detectedFunctionCall && eventData.type === 'response.function_call.done') {
-        if (eventData.function_call && eventData.function_call.name === 'rag_knowledge') {
-          console.log('[RAG] ✓ Found function call in response.function_call.done');
+        if (eventData.function_call && (eventData.function_call.name === 'rag_knowledge' || eventData.function_call.name === 'manage_notes')) {
+          const funcType = eventData.function_call.name === 'manage_notes' ? 'Notes' : 'RAG';
+          console.log(`[${funcType}] ✓ Found function call in response.function_call.done`);
           detectedFunctionCall = eventData.function_call;
         }
       }
@@ -187,8 +195,9 @@ export function useVoiceSession() {
       // Check 4: function_call nested in response
       if (!detectedFunctionCall && eventData.response && eventData.response.function_call) {
         const funcCall = eventData.response.function_call;
-        if (funcCall.name === 'rag_knowledge') {
-          console.log('[RAG] ✓ Found function call nested in response');
+        if (funcCall.name === 'rag_knowledge' || funcCall.name === 'manage_notes') {
+          const funcType = funcCall.name === 'manage_notes' ? 'Notes' : 'RAG';
+          console.log(`[${funcType}] ✓ Found function call nested in response`);
           detectedFunctionCall = funcCall;
         }
       }
@@ -196,8 +205,9 @@ export function useVoiceSession() {
       // Check 5: conversation.item.completed with function_call item
       if (!detectedFunctionCall && eventData.type === 'conversation.item.completed') {
         const item = eventData.item;
-        if (item && item.type === 'function_call' && item.name === 'rag_knowledge') {
-          console.log('[RAG] ✓ Found function call in conversation.item.completed');
+        if (item && item.type === 'function_call' && (item.name === 'rag_knowledge' || item.name === 'manage_notes')) {
+          const funcType = item.name === 'manage_notes' ? 'Notes' : 'RAG';
+          console.log(`[${funcType}] ✓ Found function call in conversation.item.completed`);
           detectedFunctionCall = item;
         }
       }
@@ -205,13 +215,14 @@ export function useVoiceSession() {
       // Check 6: conversation.updated with function_call item
       if (!detectedFunctionCall && eventData.type === 'conversation.updated') {
         const item = eventData.item;
-        if (item && item.type === 'function_call' && item.name === 'rag_knowledge') {
+        if (item && item.type === 'function_call' && (item.name === 'rag_knowledge' || item.name === 'manage_notes')) {
           // Check if function call is complete (has all arguments)
           if (
             item.status === 'completed' ||
             (item.arguments && typeof item.arguments === 'string' && item.arguments.length > 0)
           ) {
-            console.log('[RAG] ✓ Found completed function call in conversation.updated');
+            const funcType = item.name === 'manage_notes' ? 'Notes' : 'RAG';
+            console.log(`[${funcType}] ✓ Found completed function call in conversation.updated`);
             detectedFunctionCall = item;
           }
         }
@@ -220,6 +231,8 @@ export function useVoiceSession() {
       // Handle detected function call
       if (detectedFunctionCall) {
         const callId = extractCallId(detectedFunctionCall);
+        const functionName = detectedFunctionCall.name;
+        const funcType = functionName === 'manage_notes' ? 'Notes' : 'RAG';
 
         if (!callId) {
           return;
@@ -227,13 +240,13 @@ export function useVoiceSession() {
 
         // Deduplication: Check if we've already processed this call_id
         if (processedCallIdsRef.current.has(callId)) {
-          console.log('[RAG] ⊘ Already processed call_id:', callId, '- skipping');
+          console.log(`[${funcType}] ⊘ Already processed call_id:`, callId, '- skipping');
           return;
         }
 
         // Mark as processed
         processedCallIdsRef.current.add(callId);
-        console.log('[RAG] Processing function call with call_id:', callId);
+        console.log(`[${funcType}] Processing function call with call_id:`, callId);
         setStatus('processing');
 
         // Parse function arguments
@@ -241,14 +254,18 @@ export function useVoiceSession() {
 
         // Validate arguments are not empty before sending to backend
         if (!validateFunctionArguments(functionArgs)) {
-          console.error('[RAG] ✗ Skipping backend call');
+          console.error(`[${funcType}] ✗ Skipping backend call`);
           // Remove from processed set so it can be retried if response.done provides valid args
           processedCallIdsRef.current.delete(callId);
           return;
         }
 
-        // Execute function call via REST API
-        executeFunctionCall(callId, detectedFunctionCall.name, functionArgs as { query: string })
+        // Route to appropriate function executor
+        const executePromise = functionName === 'manage_notes'
+          ? executeNotesFunction(callId, functionName, functionArgs as any)
+          : executeFunctionCall(callId, functionName, functionArgs as { query: string });
+
+        executePromise
           .then((response) => {
             // Clear timeout since we got a response
             if (functionTimeoutRef.current) {
@@ -256,11 +273,13 @@ export function useVoiceSession() {
               functionTimeoutRef.current = null;
             }
 
-            console.log('[RAG] ← Function result received for call_id:', response.call_id);
+            console.log(`[${funcType}] ← Function result received for call_id:`, response.call_id);
 
             if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
               // Format the result for OpenAI
-              const output = formatRagResultFromClient(response.result);
+              const output = functionName === 'manage_notes'
+                ? formatNotesResult((response as any).result)
+                : formatRagResultFromClient((response as any).result);
 
               // Send function call output to OpenAI
               sendFunctionOutput(dataChannelRef.current, callId, output);
@@ -276,7 +295,7 @@ export function useVoiceSession() {
               functionTimeoutRef.current = null;
             }
 
-            console.error('[RAG] ✗ Function call error:', error);
+            console.error(`[${funcType}] ✗ Function call error:`, error);
 
             // Send error response to OpenAI
             if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
@@ -306,7 +325,7 @@ export function useVoiceSession() {
 
         // Handle session.created - register function after session is created
         if (eventData.type === 'session.created' && !functionRegisteredRef.current) {
-          console.log('[RAG] Session created, registering rag_knowledge function');
+          console.log('[Functions] Session created, registering functions (RAG + Notes)');
 
           // Small delay to ensure data channel is fully ready
           setTimeout(() => {
@@ -316,15 +335,15 @@ export function useVoiceSession() {
                 event_id: crypto.randomUUID(),
                 session: {
                   type: 'realtime',
-                  tools: [RAG_KNOWLEDGE_TOOL],
+                  tools: [RAG_KNOWLEDGE_TOOL, NOTES_TOOL],
                   tool_choice: 'auto',
                 },
               };
               dataChannelRef.current.send(JSON.stringify(sessionUpdate));
               functionRegisteredRef.current = true;
-              console.log('[RAG] Function registered successfully with event_id:', sessionUpdate.event_id);
+              console.log('[Functions] Functions registered successfully (RAG + Notes) with event_id:', sessionUpdate.event_id);
             } else {
-              console.warn('[RAG] Data channel not open when session.created received');
+              console.warn('[Functions] Data channel not open when session.created received');
             }
           }, EVENT_PROCESSING_DELAY_MS);
         }

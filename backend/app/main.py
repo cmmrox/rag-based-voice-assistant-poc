@@ -6,7 +6,9 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.routes.realtime import router as realtime_router
 from app.routes.rag_function import router as rag_function_router
+from app.routes.notes_function import router as notes_function_router
 from app.services.rag_client import rag_client
+from app.services.database import check_database_connection
 
 # Configure logging
 logging.basicConfig(
@@ -30,11 +32,12 @@ app.add_middleware(
 # Include routers
 app.include_router(realtime_router, prefix="/api", tags=["realtime"])
 app.include_router(rag_function_router, tags=["rag"])
+app.include_router(notes_function_router, tags=["notes"])
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
-    """Health check endpoint - checks backend and RAG service"""
+    """Health check endpoint - checks backend, RAG service, and database"""
     try:
         logger.info("Health check endpoint accessed")
 
@@ -49,14 +52,33 @@ async def health_check():
                 "details": {"error": str(e)[:100]}
             }
 
+        # Check database connection
+        try:
+            db_status = await check_database_connection()
+        except Exception as e:
+            logger.error(f"Database health check exception: {e}")
+            db_status = {
+                "status": "error",
+                "database": "PostgreSQL",
+                "error": str(e)[:100]
+            }
+
         # Determine overall status
         rag_connected = rag_status.get("status") == "connected"
-        overall_status = "healthy" if rag_connected else "degraded"
+        db_connected = db_status.get("status") == "connected"
+
+        if rag_connected and db_connected:
+            overall_status = "healthy"
+        elif not rag_connected and not db_connected:
+            overall_status = "critical"
+        else:
+            overall_status = "degraded"
 
         response_data = {
             "status": overall_status,
             "service": "backend",
             "rag_service": rag_status,
+            "database": db_status,
             "openai_api_key_configured": bool(settings.openai_api_key)
         }
 
@@ -70,7 +92,8 @@ async def health_check():
                 "status": "error",
                 "service": "backend",
                 "error": str(e),
-                "rag_service": {"status": "unknown"}
+                "rag_service": {"status": "unknown"},
+                "database": {"status": "unknown"}
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
