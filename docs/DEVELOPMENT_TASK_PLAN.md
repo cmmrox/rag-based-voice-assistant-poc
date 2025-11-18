@@ -13,19 +13,19 @@
 
 The actual implementation made the following architectural decisions that differ from this plan:
 
-1. **No WebSocket Signaling**: Instead of WebSocket-based WebRTC signaling (`/ws/signaling`), the implementation uses HTTP POST `/api/realtime/session` to forward SDP offers to OpenAI.
+1. **REST API Communication**: The implementation uses REST API endpoints for all frontend-backend communication:
+   - SDP exchange via `POST /api/realtime/session`
+   - Function calls via `POST /api/rag/function-call`
 
-2. **Direct WebRTC to OpenAI**: Frontend establishes a direct WebRTC connection with OpenAI Realtime API, not through the backend.
+2. **Direct WebRTC to OpenAI**: Frontend establishes a direct WebRTC connection with OpenAI Realtime API. Audio streams directly between client and OpenAI (no backend forwarding).
 
 3. **Function Name Changed**: The function is named `rag_knowledge` instead of `search_knowledge_base`.
 
-4. **WebSocket for RAG Only**: WebSocket endpoint `/api/ws/events/{session_id}` is used only for RAG function call execution, not for general signaling.
+4. **Client-Side Session Management**: Sessions are managed client-side; no server-side session storage (`session_manager.py` was not implemented).
 
-5. **Client-Side Session Management**: Sessions are managed client-side; no server-side session storage (`session_manager.py` was not implemented).
+5. **No openai_gateway.py**: The `openai_gateway.py` module was not implemented; instead, SDP forwarding is handled directly in the routes.
 
-6. **No openai_gateway.py**: The `openai_gateway.py` module was not implemented; instead, SDP forwarding is handled directly in the routes.
-
-7. **Simplified Architecture**: The implementation is simpler than planned, focusing on core POC functionality.
+7. **Simplified Architecture**: The implementation is simpler than planned, focusing on core POC functionality with a stateless backend.
 
 For current architecture details, see:
 - [README.md](README.md) - Current system overview
@@ -183,7 +183,6 @@ This document breaks down the PRD requirements into executable development tasks
 - `CHROMADB_HOST`
 - `CHROMADB_PORT`
 - `NEXT_PUBLIC_BACKEND_URL`
-- `NEXT_PUBLIC_WS_URL`
 
 **Acceptance Criteria:**
 - All `.env.example` files created
@@ -219,132 +218,135 @@ This document breaks down the PRD requirements into executable development tasks
 
 ## Phase 2: WebRTC Signaling and Connection
 
-### Task 2.1: Implement WebSocket Signaling Server (Backend)
-**Description:** Create WebSocket endpoint for WebRTC signaling  
+### Task 2.1: Implement REST API Signaling Endpoint (Backend)
+**Description:** Create REST endpoint for SDP exchange (WebRTC signaling)
 **Files:**
-- `backend/app/routes/websocket.py`
-- `backend/app/services/webrtc.py`
-- `backend/app/models/session.py`
+- `backend/app/routes/realtime.py`
 
 **Implementation:**
-- FastAPI WebSocket endpoint at `/ws/signaling`
-- Handle connection acceptance
-- Session ID generation and management
-- Message routing for offer/answer/ICE candidates
+- FastAPI REST endpoint at `POST /api/realtime/session`
+- Accept SDP offer in request body
+- Forward SDP to OpenAI Realtime API with API key
+- Return SDP answer from OpenAI
+- Session config in response header (optional)
 
 **Acceptance Criteria:**
-- WebSocket endpoint accepts connections
-- Can send/receive JSON messages
-- Session IDs generated and tracked
+- REST endpoint accepts SDP offers
+- SDP forwarded to OpenAI successfully
+- SDP answer returned to client
+- Stateless operation (no session storage)
 
 **Dependencies:** Task 1.3
 
 ---
 
-### Task 2.2: Implement WebRTC Peer Connection Handler (Backend)
-**Description:** Set up WebRTC peer connection using aiortc or similar  
+### Task 2.2: Verify Direct WebRTC Connection (No Backend Handling)
+**Description:** Verify that WebRTC connection is established directly between client and OpenAI
 **Files:**
-- `backend/app/services/webrtc.py` (extend)
-- `backend/requirements.txt` (add aiortc or python-webrtc)
+- No backend WebRTC handling needed
 
 **Implementation:**
-- Create RTCPeerConnection instance
-- Handle offer creation
-- Handle answer processing
-- ICE candidate handling
-- Audio track handling
+- Backend only acts as SDP proxy
+- No RTCPeerConnection in backend
+- No audio track handling in backend
+- WebRTC connection is direct: Client ↔ OpenAI
 
 **Acceptance Criteria:**
-- Peer connection can be created
-- Offer/answer exchange works
-- ICE candidates exchanged
-- Audio tracks received
+- Client establishes WebRTC connection with OpenAI
+- Audio streams directly (not through backend)
+- Backend only handles SDP exchange
+- No WebRTC libraries needed in backend
 
 **Dependencies:** Task 2.1
 
 ---
 
-### Task 2.3: Implement WebSocket Client (Frontend)
-**Description:** Create WebSocket client for signaling  
+### Task 2.3: Implement HTTP Client for REST API (Frontend)
+**Description:** Create HTTP client for REST API calls (SDP exchange and function calls)
 **Files:**
-- `frontend/lib/websocket.ts`
 - `frontend/hooks/useVoiceSession.ts`
+- `frontend/utils/webrtc.ts`
 
 **Implementation:**
-- WebSocket connection to backend
-- Message sending/receiving
-- Connection state management
-- Reconnection logic
+- Fetch API for REST calls
+- POST /api/realtime/session for SDP exchange
+- POST /api/rag/function-call for function execution
+- Error handling for HTTP requests
 
 **Acceptance Criteria:**
-- WebSocket connects to backend
-- Messages sent/received successfully
-- Connection errors handled
+- REST API calls work correctly
+- SDP exchange successful
+- Function calls successful
+- HTTP errors handled
 
 **Dependencies:** Task 1.2, Task 2.1
 
 ---
 
 ### Task 2.4: Implement WebRTC Client (Frontend)
-**Description:** Create WebRTC peer connection on frontend  
+**Description:** Create WebRTC peer connection on frontend for direct connection to OpenAI
 **Files:**
 - `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- RTCPeerConnection creation
-- STUN server configuration
+- RTCPeerConnection creation (no STUN servers needed)
 - Media stream capture (getUserMedia)
-- Offer/answer handling
-- ICE candidate exchange
+- Create SDP offer
+- Send offer to backend via REST API
+- Receive SDP answer from backend
+- Set remote description
+- Data channel creation ('oai-events') for OpenAI events
 - Audio track handling
 
 **Acceptance Criteria:**
-- Peer connection established
+- Peer connection established with OpenAI
 - Audio stream captured from microphone
-- Offer/answer exchanged successfully
-- ICE candidates exchanged
+- SDP offer/answer exchanged via REST API
+- Data channel created for events
 - Connection state tracked
 
 **Dependencies:** Task 2.3
 
 ---
 
-### Task 2.5: Implement Audio Echo Test
-**Description:** Test audio streaming by echoing audio back  
+### Task 2.5: Test Direct Audio Streaming to OpenAI
+**Description:** Test audio streaming directly to OpenAI Realtime API
 **Files:**
-- `backend/app/services/webrtc.py` (extend)
 - `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Backend receives audio and sends back
-- Frontend plays received audio
+- Audio streams from client to OpenAI via WebRTC
+- Audio streams from OpenAI to client via WebRTC
+- Backend not involved in audio streaming
 - Verify audio quality
 
 **Acceptance Criteria:**
-- Audio streams from frontend to backend
-- Audio streams from backend to frontend
-- Echo test works (user hears their voice)
+- Audio streams to OpenAI successfully
+- Audio streams from OpenAI successfully
+- Direct connection verified (no backend audio forwarding)
+- Audio quality acceptable
 
 **Dependencies:** Tasks 2.2, 2.4
 
 ---
 
-### Task 2.6: Implement Session Management (Backend)
-**Description:** Track active sessions in memory  
+### Task 2.6: Client-Side Session Management (Frontend)
+**Description:** Manage sessions entirely on client-side (no backend session storage)
 **Files:**
-- `backend/app/models/session.py` (extend)
-- `backend/app/services/session_manager.py` (new)
+- `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Session data model
-- In-memory session storage
-- Session lifecycle management
-- Session cleanup on disconnect
+- Generate session ID client-side (crypto.randomUUID())
+- Track session state in frontend
+- Session lifecycle in React state
+- No backend session persistence
+- Backend is stateless
 
 **Acceptance Criteria:**
-- Sessions tracked in memory
-- Session data accessible
-- Cleanup on disconnect works
+- Session ID generated client-side
+- Session state managed in frontend
+- Backend remains stateless
+- No server-side session storage
 
 **Dependencies:** Task 2.1
 
@@ -352,99 +354,104 @@ This document breaks down the PRD requirements into executable development tasks
 
 ## Phase 3: OpenAI Realtime API Integration
 
-### Task 3.1: Set Up OpenAI Realtime API Client
-**Description:** Create OpenAI Realtime API connection handler  
+### Task 3.1: Set Up OpenAI Realtime API Connection (Frontend)
+**Description:** Establish WebRTC connection to OpenAI Realtime API via data channel
 **Files:**
-- `backend/app/services/openai_gateway.py`
-- `backend/requirements.txt` (verify openai SDK version)
+- `frontend/hooks/useVoiceSession.ts`
+- Backend: `backend/app/routes/realtime.py` (SDP proxy only)
 
 **Implementation:**
-- OpenAI client initialization
-- WebSocket connection to Realtime API
-- Connection management
+- Frontend creates WebRTC connection to OpenAI
+- Backend only forwards SDP (no direct OpenAI connection in backend)
+- Data channel for OpenAI events
+- Connection established via WebRTC
 - Error handling
 
 **Acceptance Criteria:**
-- Connection to OpenAI API established
-- Connection state managed
+- WebRTC connection to OpenAI established from frontend
+- Backend acts as SDP proxy only
+- Data channel working
 - Errors handled gracefully
 
-**Dependencies:** Task 1.3
+**Dependencies:** Task 1.3, Task 2.4
 
 ---
 
-### Task 3.2: Implement Audio Forwarding (WebRTC → OpenAI)
-**Description:** Forward audio from WebRTC to OpenAI Realtime API  
+### Task 3.2: Verify Direct Audio Streaming (Client → OpenAI)
+**Description:** Verify audio streams directly from client to OpenAI via WebRTC
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
-- `backend/app/services/webrtc.py` (extend)
+- `frontend/hooks/useVoiceSession.ts`
 
 **Implementation:**
-- Capture audio from WebRTC track
-- Convert audio format (if needed)
-- Send audio chunks to OpenAI API
-- Handle audio buffer events
+- Audio streams directly via WebRTC (no backend involvement)
+- Frontend adds audio track to peer connection
+- Audio automatically forwarded to OpenAI
+- No backend audio handling needed
+- No format conversion needed (handled by WebRTC)
 
 **Acceptance Criteria:**
-- Audio forwarded to OpenAI
-- Format conversion works
-- No audio loss
+- Audio streams from client to OpenAI
+- Direct WebRTC connection working
+- No backend audio forwarding
+- Audio quality acceptable
 
-**Dependencies:** Tasks 2.2, 3.1
+**Dependencies:** Tasks 2.4, 3.1
 
 ---
 
-### Task 3.3: Implement Audio Forwarding (OpenAI → WebRTC)
-**Description:** Forward audio from OpenAI to WebRTC client  
+### Task 3.3: Verify Direct Audio Playback (OpenAI → Client)
+**Description:** Verify audio streams directly from OpenAI to client via WebRTC
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
-- `backend/app/services/webrtc.py` (extend)
+- `frontend/hooks/useVoiceSession.ts`
 
 **Implementation:**
-- Receive audio from OpenAI API
-- Convert audio format (if needed)
-- Send audio to WebRTC peer connection
-- Handle audio stream events
+- Audio streams directly via WebRTC (no backend involvement)
+- Frontend handles ontrack event
+- Audio automatically received from OpenAI
+- Play audio using Web Audio API
+- No backend audio handling needed
 
 **Acceptance Criteria:**
 - Audio received from OpenAI
-- Audio forwarded to client
-- Format conversion works
+- Audio playback works
+- Direct WebRTC connection working
+- No backend audio forwarding
 
-**Dependencies:** Tasks 2.2, 3.1
+**Dependencies:** Tasks 2.4, 3.1
 
 ---
 
-### Task 3.4: Implement Transcription Event Handling
-**Description:** Handle transcription events from OpenAI  
+### Task 3.4: Implement Transcription Event Handling (Frontend)
+**Description:** Handle transcription events from OpenAI via data channel
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
-- `backend/app/models/session.py` (extend)
+- `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Listen for `input_audio_buffer.transcription.completed` events
+- Listen for events on WebRTC data channel
+- Handle `conversation.item.input_audio_transcription.completed` events
 - Extract transcript text
-- Store transcript in session
-- Send transcript to frontend via WebSocket
+- Update transcript state in frontend
+- No backend involvement (events come via data channel)
 
 **Acceptance Criteria:**
-- Transcription events received
+- Transcription events received via data channel
 - Transcript extracted correctly
-- Transcript sent to frontend
+- Transcript displayed in UI
+- No backend event forwarding needed
 
 **Dependencies:** Task 3.1
 
 ---
 
 ### Task 3.5: Display Transcription in UI
-**Description:** Show transcription in frontend  
+**Description:** Show transcription in frontend
 **Files:**
 - `frontend/components/Transcript.tsx`
 - `frontend/hooks/useVoiceSession.ts` (extend)
 - `frontend/app/page.tsx` (update)
 
 **Implementation:**
-- Receive transcript from WebSocket
+- Receive transcript from data channel events
 - Update transcript state
 - Display in Transcript component
 - Format user messages
@@ -454,38 +461,40 @@ This document breaks down the PRD requirements into executable development tasks
 - Updates in real-time
 - User messages formatted correctly
 
-**Dependencies:** Tasks 2.3, 3.4
+**Dependencies:** Task 3.4
 
 ---
 
-### Task 3.6: Implement Response Event Handling
-**Description:** Handle response events from OpenAI  
+### Task 3.6: Implement Response Event Handling (Frontend)
+**Description:** Handle response events from OpenAI via data channel
 **Files:**
-- `backend/app/services/openai_gateway.py` (extend)
+- `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Listen for `response.audio_transcript.delta` events
-- Listen for `response.done` events
+- Listen for `response.audio_transcript.delta` events via data channel
+- Listen for `response.done` events via data channel
 - Extract response text
-- Send response text to frontend
+- Update transcript state in frontend
+- No backend involvement (events come via data channel)
 
 **Acceptance Criteria:**
-- Response events received
+- Response events received via data channel
 - Response text extracted
-- Response sent to frontend
+- Response displayed in UI
+- No backend event forwarding needed
 
 **Dependencies:** Task 3.1
 
 ---
 
 ### Task 3.7: Display Response in UI
-**Description:** Show assistant responses in transcript  
+**Description:** Show assistant responses in transcript
 **Files:**
 - `frontend/components/Transcript.tsx` (extend)
 - `frontend/hooks/useVoiceSession.ts` (extend)
 
 **Implementation:**
-- Receive response from WebSocket
+- Receive response from data channel events
 - Update transcript state
 - Display assistant messages
 - Format assistant messages
@@ -744,67 +753,72 @@ This document breaks down the PRD requirements into executable development tasks
 
 ---
 
-### Task 5.2: Register RAG Function in Session Configuration
-**Description:** Add search_knowledge_base function to OpenAI Realtime session configuration  
+### Task 5.2: Register RAG Function in Session Configuration (Frontend)
+**Description:** Add rag_knowledge function to OpenAI Realtime session via data channel
 **Files:**
-- `backend/app/routes/realtime.py`
+- `frontend/hooks/useVoiceSession.ts`
+- `frontend/constants/tools.ts` (function definition)
 
 **Implementation:**
-- Define function schema with name, description, and parameters
-- Add function to `tools` array in session configuration
-- Update session instructions to guide model on function usage
-- Ensure function is registered when creating session
+- Define function schema with name `rag_knowledge`, description, and parameters
+- Send `session.update` event via data channel to register function
+- Register function when data channel opens (on `session.created` event)
+- No backend involvement in function registration
 
 **Acceptance Criteria:**
-- Function registered in session configuration
+- Function registered via data channel
 - Function schema correctly defined
-- Instructions guide model appropriately
+- Function available for OpenAI to call
+- Registration happens client-side
 
 **Dependencies:** Task 3.1
 
 ---
 
-### Task 5.3: Implement Function Call Handler (Backend)
-**Description:** Handle function call execution requests from frontend  
+### Task 5.3: Implement Function Call Handler (Backend REST API)
+**Description:** Handle function call execution requests from frontend via REST API
 **Files:**
-- `backend/app/routes/events.py` (extend WebSocket handler)
+- `backend/app/routes/rag.py` (new REST endpoint)
 - `backend/app/services/rag_client.py` (use)
 
 **Implementation:**
-- Listen for `function_call` messages via WebSocket
+- Create `POST /api/rag/function-call` endpoint
+- Accept function call request in JSON body
 - Extract function name and arguments
-- Execute `search_knowledge_base` function by calling RAG service
+- Execute `rag_knowledge` function by calling RAG service
 - Format function result with context and sources
-- Send function result back to frontend via WebSocket
+- Return function result in HTTP response
 - Handle errors gracefully
 
 **Acceptance Criteria:**
-- Function calls received and processed
+- REST endpoint accepts function calls
 - RAG queries executed correctly
-- Results formatted and returned
+- Results formatted and returned in response
 - Errors handled without crashing
+- Stateless operation
 
 **Dependencies:** Tasks 5.1, 5.2
 
 ---
 
 ### Task 5.4: Implement Function Call Event Handling (Frontend)
-**Description:** Handle function call events from OpenAI and execute them  
+**Description:** Handle function call events from OpenAI and execute them via REST API
 **Files:**
 - `frontend/hooks/useVoiceSession.ts` (extend)
+- `frontend/utils/functionCalls.ts`
 
 **Implementation:**
-- Listen for `conversation.item.completed` events with function calls
+- Listen for `response.function_call_arguments.done` events via data channel
 - Parse function call arguments (handle string or object format)
-- Send function call request to backend via WebSocket
-- Receive function call result from backend
+- Send function call request to backend via REST API (POST /api/rag/function-call)
+- Receive function call result from REST response
 - Send function call output back to OpenAI via data channel
-- Trigger response generation after function result sent
+- Create new response after function result sent
 
 **Acceptance Criteria:**
-- Function call events detected
-- Function calls forwarded to backend
-- Function results sent back to OpenAI
+- Function call events detected via data channel
+- Function calls sent to backend via REST API
+- Function results sent back to OpenAI via data channel
 - Response generation triggered correctly
 
 **Dependencies:** Tasks 2.3, 5.3
@@ -812,7 +826,7 @@ This document breaks down the PRD requirements into executable development tasks
 ---
 
 ### Task 5.5: Test End-to-End RAG Voice Flow with Function Calling
-**Description:** Test complete flow with knowledge base using function calling  
+**Description:** Test complete flow with knowledge base using function calling via REST API
 **Files:**
 - Test with ingested documents
 - Verify function calling works
@@ -820,17 +834,18 @@ This document breaks down the PRD requirements into executable development tasks
 
 **Implementation:**
 - Ingest test documents
-- Start voice session
+- Start voice session (WebRTC connection)
 - Ask question related to documents
-- Verify model calls search_knowledge_base function
-- Verify function executes and returns context
+- Verify model calls rag_knowledge function (via data channel)
+- Verify function executes via REST API and returns context
 - Verify response references knowledge base context
 
 **Acceptance Criteria:**
 - Function calling works correctly
-- Context retrieved via function call
+- Context retrieved via REST API
 - Responses reference knowledge base
 - End-to-end flow works smoothly
+- All communication uses REST API
 
 **Dependencies:** Tasks 5.2, 5.3, 5.4
 
@@ -943,14 +958,14 @@ This document breaks down the PRD requirements into executable development tasks
 ---
 
 ### Task 6.6: Implement Error Handling in UI
-**Description:** Handle errors in frontend  
+**Description:** Handle errors in frontend
 **Files:**
 - `frontend/hooks/useVoiceSession.ts` (extend)
-- `frontend/lib/websocket.ts` (extend)
 
 **Implementation:**
-- WebSocket error handling
+- REST API error handling (fetch errors)
 - WebRTC error handling
+- Data channel error handling
 - Microphone permission errors
 - Network errors
 - Display errors to user
@@ -1161,14 +1176,14 @@ This document breaks down the PRD requirements into executable development tasks
 ---
 
 ### Task 7.8: Create API Documentation
-**Description:** Document API endpoints  
+**Description:** Document API endpoints
 **Files:**
 - `API_DOCUMENTATION.md` (new)
 
 **Content:**
-- Backend endpoints
+- Backend REST API endpoints
 - RAG service endpoints
-- WebSocket protocol
+- REST API protocol
 - Request/response formats
 - Examples
 
@@ -1176,6 +1191,7 @@ This document breaks down the PRD requirements into executable development tasks
 - All endpoints documented
 - Examples provided
 - Clear and complete
+- REST API architecture documented
 
 **Dependencies:** Tasks 2.1, 4.5, 4.9
 

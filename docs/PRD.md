@@ -263,11 +263,11 @@ The product will be considered successful when:
 ### 4.4 Integration Requirements
 
 #### FR-10: OpenAI Realtime API Integration
-- **FR-10.1**: System shall establish WebSocket connection to OpenAI Realtime API
+- **FR-10.1**: System shall establish WebRTC connection to OpenAI Realtime API via POST /api/realtime/session endpoint
 - **FR-10.2**: System shall handle API authentication and key management securely
 - **FR-10.3**: System shall implement reconnection logic for connection failures
 - **FR-10.4**: System shall handle API rate limits and quota management
-- **FR-10.5**: System shall process streaming audio and text responses
+- **FR-10.5**: System shall process streaming audio and text responses via WebRTC data channel
 
 #### FR-11: ChromaDB Integration
 - **FR-11.1**: System shall connect to ChromaDB instance (local or cloud-hosted)
@@ -302,13 +302,13 @@ The voice assistant follows a microservices architecture with the following comp
 │  ┌──────────────────────────────────────────────────────┐    │
 │  │         Voice Session Manager (Node.js/Python)       │    │
 │  │  - Session lifecycle management                      │    │
-│  │  - WebRTC signaling server                          │    │
+│  │  - WebRTC signaling coordination via REST API        │    │
 │  │  - Audio routing                                    │    │
 │  └──────────────────┬───────────────────────────────────┘    │
 │                     │                                          │
 │  ┌──────────────────▼───────────────────────────────────┐    │
 │  │      OpenAI Realtime API Gateway                     │    │
-│  │  - WebSocket connection management                   │    │
+│  │  - WebRTC connection management                      │    │
 │  │  - Audio stream processing                           │    │
 │  │  - STT/TTS coordination                             │    │
 │  └──────────────────┬───────────────────────────────────┘    │
@@ -352,7 +352,7 @@ The voice assistant follows a microservices architecture with the following comp
 - **Key Libraries**:
   - WebRTC API for audio streaming
   - Web Audio API for audio processing
-  - WebSocket client for signaling
+  - Fetch API for REST API signaling and function calls
 
 #### 5.2.2 Voice Session Manager
 - **Technology**: Node.js or Python (FastAPI/Express)
@@ -369,9 +369,9 @@ The voice assistant follows a microservices architecture with the following comp
 #### 5.2.3 OpenAI Realtime API Gateway
 - **Technology**: Node.js or Python
 - **Responsibilities**:
-  - WebSocket connection to OpenAI Realtime API
+  - WebRTC connection to OpenAI Realtime API via REST POST endpoint
   - Audio stream forwarding (client ↔ OpenAI)
-  - Text stream processing
+  - Text stream processing via data channel
   - Event handling (session events, transcription events)
 - **Key Features**:
   - Connection retry logic
@@ -411,12 +411,12 @@ The voice assistant follows a microservices architecture with the following comp
 3. OpenAI API transcribes audio and analyzes query
 4. Model decides to call rag_knowledge function
 5. OpenAI API → Client: Function call event (conversation.item.completed)
-6. Client → Backend WebSocket: Function call request with query
+6. Client → Backend REST API: POST /api/rag/function-call with query
 7. Backend → RAG Service: HTTP POST with query text
 8. RAG Service → Embedding API → Query vector generated
 9. RAG Service → ChromaDB → Relevant documents retrieved
 10. RAG Service → Backend: Returns context and sources
-11. Backend → Client WebSocket: Function call result
+11. Backend → Client REST API: Function call result in response body
 12. Client → OpenAI Realtime API: Function call output via data channel
 13. OpenAI API → Generates response text using function result context
 14. OpenAI API → Client: TTS audio stream via WebRTC
@@ -438,10 +438,10 @@ The voice assistant follows a microservices architecture with the following comp
 ### 5.4 API Integration Points
 
 #### 5.4.1 OpenAI Realtime API
-- **Endpoint**: `wss://api.openai.com/v1/realtime` (WebRTC via `/v1/realtime/calls`)
+- **Endpoint**: `POST https://api.openai.com/v1/realtime/calls` (WebRTC session initialization)
 - **Authentication**: Bearer token (API key)
-- **Protocol**: WebRTC with data channel for events
-- **Function Calling**: Native support for function/tool calling
+- **Protocol**: WebRTC with data channel for events; REST API for frontend-backend signaling
+- **Function Calling**: Native support for function/tool calling via REST API to backend
 - **Key Events**:
   - `conversation.item.input_audio_buffer.speech_started`
   - `conversation.item.input_audio_buffer.transcription.completed`
@@ -470,7 +470,7 @@ The voice assistant follows a microservices architecture with the following comp
 #### 5.5.1 WebRTC Infrastructure
 - **STUN Server**: For NAT traversal (public STUN servers or self-hosted)
 - **TURN Server**: For relay in restrictive networks (self-hosted recommended)
-- **Signaling Server**: Part of Session Manager (WebSocket-based)
+- **Signaling Server**: Part of Session Manager (REST API-based endpoints for SDP exchange)
 
 #### 5.5.2 Session Storage
 - **Technology**: Redis (for fast session state) + PostgreSQL (for persistence)
@@ -527,7 +527,7 @@ The voice assistant follows a microservices architecture with the following comp
 | Concurrent sessions per instance | 100+ | Per Voice Session Manager instance |
 | Queries per second | 50+ | Per RAG Pipeline instance |
 | Audio stream bitrate | 16-32 kbps | Opus codec, mono, 16kHz sample rate |
-| WebSocket connections | 1000+ | Per API Gateway instance |
+| REST API requests per second | 1000+ | Per API Gateway instance |
 
 #### 6.1.3 Resource Utilization
 
@@ -598,7 +598,7 @@ The voice assistant follows a microservices architecture with the following comp
 
 #### 6.5.1 Browser Support
 - **Required**: Chrome 90+, Firefox 88+, Safari 14+, Edge 90+
-- **Features**: WebRTC, Web Audio API, WebSocket support
+- **Features**: WebRTC, Web Audio API, Fetch/XMLHttpRequest API support
 - **Mobile Browsers**: iOS Safari 14+, Chrome Mobile 90+
 
 #### 6.5.2 Operating System Support
@@ -717,7 +717,7 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
    ↓
 3. Function Call Execution
    - OpenAI Realtime API sends function call event to frontend
-   - Frontend forwards function call to backend via WebSocket
+   - Frontend forwards function call to backend via POST /api/rag/function-call
    - Backend receives function call with query parameter
    ↓
 4. Query Preprocessing (Backend/RAG Service)
@@ -743,7 +743,7 @@ Retrieval-Augmented Generation (RAG) enhances the voice assistant's responses by
    - Return to backend
    ↓
 9. Function Result Return
-   - Backend sends function result to frontend via WebSocket
+   - Backend sends function result to frontend via REST API response
    - Frontend sends function call output to OpenAI Realtime API
    ↓
 10. Response Generation (OpenAI Realtime API)
@@ -967,16 +967,16 @@ The voice pipeline handles the complete flow of audio data from user input to sy
 
 #### 8.4.1 WebRTC Architecture
 - **Peer Connection**: Direct peer-to-peer connection between client and server
-- **Signaling**: WebSocket-based signaling server (part of Session Manager)
+- **Signaling**: REST API-based signaling endpoints (part of Session Manager)
 - **STUN/TURN**: NAT traversal servers for connectivity
-- **ICE Candidates**: Exchange ICE candidates for connection establishment
+- **ICE Candidates**: Exchange ICE candidates via REST API for connection establishment
 
 #### 8.4.2 Signaling Flow
 ```
-1. Client → Signaling Server: Create session request
-2. Signaling Server → Client: Session ID and WebRTC offer
-3. Client → Signaling Server: WebRTC answer + ICE candidates
-4. Signaling Server → Client: Server ICE candidates
+1. Client → Backend: POST /api/realtime/session - Create session request
+2. Backend → Client: Response with Session ID and WebRTC offer (SDP)
+3. Client → Backend: POST /api/realtime/session/answer - WebRTC answer + ICE candidates
+4. Backend → Client: Response with Server ICE candidates
 5. Client ↔ Server: Direct WebRTC connection established
 6. Audio streaming begins
 ```
@@ -1073,7 +1073,7 @@ The voice pipeline handles the complete flow of audio data from user input to sy
 - **Streaming**: Process and stream audio in parallel, not sequentially
 - **Prefetching**: Prefetch likely responses for common queries
 - **Caching**: Cache embeddings and common responses
-- **Connection Pooling**: Reuse WebSocket connections
+- **Connection Pooling**: Reuse HTTP connections for REST API requests
 - **Parallel Processing**: Run RAG retrieval in parallel with STT
 
 ### 8.7 Error Handling and Recovery

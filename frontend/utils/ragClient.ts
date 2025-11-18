@@ -1,6 +1,5 @@
 /**
  * REST API client for RAG function calls
- * Replaces WebSocket-based communication with synchronous REST API calls
  */
 
 import { BACKEND_URL } from '@/constants/api';

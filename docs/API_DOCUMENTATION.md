@@ -10,8 +10,8 @@ The current implementation uses the following architecture:
 
 1. **Frontend ↔ OpenAI Realtime API**: Direct WebRTC connection with data channel for audio and events
 2. **Frontend → Backend**: HTTP POST for SDP forwarding to OpenAI
-3. **Frontend ↔ Backend**: WebSocket for RAG function call execution only
-4. **Backend ↔ RAG Service**: HTTP for knowledge base queries
+3. **Frontend ↔ Backend**: REST API (HTTP POST) for RAG function call execution
+4. **Backend ↔ RAG Service**: REST API (HTTP POST) for knowledge base queries
 
 ## Backend API
 
@@ -99,46 +99,35 @@ Health check endpoint for backend service.
 
 ---
 
-### WebSocket Endpoint
+#### `POST /api/rag/function-call`
 
-#### `WebSocket /api/ws/events/{session_id}`
+REST API endpoint for executing RAG function calls.
 
-WebSocket endpoint for handling RAG function call execution.
-
-**Connection:** `ws://localhost:8002/api/ws/events/{session_id}`
+**Request:**
+- Method: `POST`
+- Content-Type: `application/json`
+- URL: `http://localhost:8002/api/rag/function-call`
+- Body:
+  ```json
+  {
+    "call_id": "call_abc123",
+    "function_name": "rag_knowledge",
+    "arguments": {
+      "query": "What is the main topic?"
+    }
+  }
+  ```
 
 **Flow:**
-1. Frontend establishes WebSocket connection with unique session_id
-2. OpenAI Realtime API calls `rag_knowledge` function via WebRTC data channel
-3. Frontend receives function call event from OpenAI
-4. Frontend forwards function call to backend via this WebSocket
-5. Backend executes RAG query and returns result
-6. Frontend sends result back to OpenAI via data channel
+1. OpenAI Realtime API calls `rag_knowledge` function via WebRTC data channel
+2. Frontend receives function call event from OpenAI
+3. Frontend sends REST API request to backend with function details
+4. Backend executes RAG query and returns result
+5. Frontend sends result back to OpenAI via data channel
 
----
-
-#### Client → Server Messages
-
-**Function Call Request**:
+**Response (Success):**
 ```json
 {
-  "type": "function_call",
-  "call_id": "call_abc123",
-  "function_name": "rag_knowledge",
-  "arguments": {
-    "query": "What is the main topic?"
-  }
-}
-```
-
----
-
-#### Server → Client Messages
-
-**Function Call Result (Success)**:
-```json
-{
-  "type": "function_call_result",
   "call_id": "call_abc123",
   "function_name": "rag_knowledge",
   "result": {
@@ -147,28 +136,34 @@ WebSocket endpoint for handling RAG function call execution.
     "sources": [
       {
         "source": "document.pdf",
-        "chunk_id": 0,
-        "chunk_index": 0
+        "content": "chunk content",
+        "metadata": {}
       }
     ],
-    "message": "Knowledge base search completed successfully"
+    "message": ""
   }
 }
 ```
 
-**Function Call Result (Error)**:
+**Response (Error):**
 ```json
 {
-  "type": "function_call_result",
   "call_id": "call_abc123",
   "function_name": "rag_knowledge",
   "result": {
     "success": false,
-    "error": "Error message",
-    "message": "Knowledge base search failed"
+    "context": "",
+    "sources": [],
+    "message": "",
+    "error": "Query parameter is required"
   }
 }
 ```
+
+**HTTP Status Codes:**
+- `200 OK`: Function executed successfully (check result.success for actual status)
+- `400 Bad Request`: Invalid function name or malformed request
+- `500 Internal Server Error`: Server error during execution
 
 ---
 
@@ -309,11 +304,11 @@ The application uses OpenAI Realtime API's native function calling feature to in
 4. **Model analyzes query** → Decides if knowledge base search is needed
 5. **Model calls function** → If needed, calls `rag_knowledge` function
 6. **OpenAI → Frontend** → Function call event sent via WebRTC data channel (`conversation.item.completed`)
-7. **Frontend → Backend** → Function call forwarded via WebSocket (`/api/ws/events/{session_id}`)
+7. **Frontend → Backend** → REST API POST to `/api/rag/function-call` with function details
 8. **Backend → RAG Service** → HTTP POST to `/api/rag/query`
 9. **RAG Service** → Generates embedding, queries ChromaDB, assembles context
 10. **RAG Service → Backend** → Returns context and sources
-11. **Backend → Frontend** → Function result sent via WebSocket
+11. **Backend → Frontend** → Function result returned as REST API response
 12. **Frontend → OpenAI** → Function call output sent via data channel (`conversation.item.create`)
 13. **OpenAI generates response** → Uses retrieved context to generate informed answer
 14. **OpenAI → Frontend** → Response audio stream via WebRTC
@@ -397,24 +392,24 @@ curl -X POST http://localhost:8001/api/rag/query \
 
 ---
 
-### Example 4: WebSocket Function Call Execution
+### Example 4: REST API Function Call Execution
 
-**Client → Server (via WebSocket):**
-```json
-{
-  "type": "function_call",
-  "call_id": "call_TZj4KqW3e8",
-  "function_name": "rag_knowledge",
-  "arguments": {
-    "query": "What are the key features?"
-  }
-}
+**Request (Frontend → Backend):**
+```bash
+curl -X POST http://localhost:8002/api/rag/function-call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "call_id": "call_TZj4KqW3e8",
+    "function_name": "rag_knowledge",
+    "arguments": {
+      "query": "What are the key features?"
+    }
+  }'
 ```
 
-**Server → Client (via WebSocket):**
+**Response (Backend → Frontend):**
 ```json
 {
-  "type": "function_call_result",
   "call_id": "call_TZj4KqW3e8",
   "function_name": "rag_knowledge",
   "result": {
@@ -423,11 +418,11 @@ curl -X POST http://localhost:8001/api/rag/query \
     "sources": [
       {
         "source": "overview.pdf",
-        "chunk_id": 0,
-        "chunk_index": 0
+        "content": "chunk content...",
+        "metadata": {}
       }
     ],
-    "message": "Knowledge base search completed successfully"
+    "message": ""
   }
 }
 ```
@@ -442,7 +437,7 @@ All HTTP endpoints return appropriate HTTP status codes:
 - `422` - Unprocessable Entity (validation error)
 - `500` - Internal Server Error
 
-WebSocket errors are sent as messages and the connection may be closed on critical errors.
+REST API errors include detailed error messages in the response body for debugging.
 
 ---
 
@@ -473,9 +468,9 @@ No authentication implemented in POC version. API key management handled via env
 
 ### Session Management
 - Sessions are managed client-side
-- No server-side session storage in POC
-- Session ID generated by frontend
-- WebSocket connection uses session ID for routing
+- Backend is completely stateless
+- Session ID generated by frontend for tracking only
+- No persistent connections maintained on backend
 
 ### WebRTC Connection
 - Direct connection between frontend and OpenAI
@@ -486,7 +481,7 @@ No authentication implemented in POC version. API key management handled via env
 ### Function Calling
 - Native OpenAI Realtime API function calling
 - Model decides when to call `rag_knowledge`
-- Execution happens via WebSocket to backend
+- Execution happens via REST API POST to backend
 - Results sent back via WebRTC data channel to OpenAI
 
 ---

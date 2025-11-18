@@ -81,7 +81,7 @@ The POC will be considered successful if:
 - **Styling:** Tailwind CSS (minimal styling for POC)
 - **Audio:** Web Audio API + MediaRecorder API
 - **WebRTC:** Native WebRTC API
-- **WebSocket:** Native WebSocket API for signaling
+- **HTTP Client:** Fetch API for REST API communication
 - **State Management:** React Context API + useState/useEffect hooks
 
 **Key Libraries:**
@@ -94,15 +94,15 @@ The POC will be considered successful if:
 
 **Framework:** FastAPI (Python 3.11+)
 - **Language:** Python 3.11+
-- **WebSocket:** FastAPI WebSocket support
-- **HTTP Client:** `httpx` or `aiohttp` for async HTTP requests
+- **HTTP Server:** FastAPI REST API endpoints
+- **HTTP Client:** `httpx` for async HTTP requests
 - **OpenAI Integration:** `openai` Python SDK
-- **WebRTC Signaling:** Custom WebSocket server using FastAPI
+- **WebRTC Signaling:** REST API endpoints for SDP exchange using FastAPI
 
 **Key Libraries:**
 - `fastapi` - Modern Python web framework
 - `uvicorn` - ASGI server
-- `websockets` - WebSocket support
+- `httpx` - Async HTTP client
 - `openai` - OpenAI Python SDK
 - `python-dotenv` - Environment variable management
 - `pydantic` - Data validation
@@ -240,34 +240,28 @@ The POC will be considered successful if:
 │  │  - Peer connection management                        │   │
 │  └──────────────────────────────────────────────────────┘   │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │  WebSocket Client:                                    │   │
-│  │  - Signaling for WebRTC                              │   │
-│  │  - Session management                                 │   │
+│  │  HTTP Client (Fetch API):                            │   │
+│  │  - REST API calls for WebRTC signaling              │   │
+│  │  - Function call execution via POST                  │   │
 │  └──────────────┬────────────────────────────────────────┘   │
 └─────────────────┼────────────────────────────────────────────┘
-                  │ WebSocket (signaling)
+                  │ REST API (signaling + function calls)
                   │ WebRTC (audio stream)
                   │
 ┌─────────────────▼────────────────────────────────────────────┐
 │              Backend (FastAPI)                                 │
 │  ┌──────────────────────────────────────────────────────┐     │
-│  │  WebSocket Signaling Server                          │     │
-│  │  - WebRTC offer/answer exchange                     │     │
-│  │  - ICE candidate exchange                            │     │
-│  │  - Session state management                          │     │
-│  └──────────────┬───────────────────────────────────────┘     │
-│                 │                                              │
-│  ┌──────────────▼───────────────────────────────────────┐     │
-│  │  WebRTC Peer Connection Handler                      │     │
-│  │  - Audio stream routing                              │     │
-│  │  - Client ↔ OpenAI audio forwarding                 │     │
+│  │  REST API Signaling Endpoints                        │     │
+│  │  - SDP exchange via POST /api/realtime/session      │     │
+│  │  - Function call handling via POST                   │     │
+│  │  - Stateless session coordination                    │     │
 │  └──────────────┬───────────────────────────────────────┘     │
 │                 │                                              │
 │  ┌──────────────▼───────────────────────────────────────┐     │
 │  │  OpenAI Realtime API Gateway                        │     │
-│  │  - WebSocket to OpenAI API                          │     │
-│  │  - Audio stream forwarding                          │     │
-│  │  - Event handling (transcription, response)         │     │
+│  │  - SDP forwarding to OpenAI Realtime API            │     │
+│  │  - Session configuration management                  │     │
+│  │  - Model and voice parameter handling               │     │
 │  └──────────────┬───────────────────────────────────────┘     │
 │                 │                                              │
 │  ┌──────────────▼───────────────────────────────────────┐     │
@@ -305,7 +299,8 @@ The POC will be considered successful if:
 
 External Services:
 ┌─────────────────────────────────────────────────────────────┐
-│  OpenAI Realtime API (wss://api.openai.com/v1/realtime)   │
+│  OpenAI Realtime API (POST https://api.openai.com/v1/...)  │
+│  - WebRTC session creation via REST POST endpoint          │
 │  OpenAI Embeddings API (https://api.openai.com/v1/...)     │
 │  STUN Servers (public)                                      │
 └─────────────────────────────────────────────────────────────┘
@@ -315,20 +310,17 @@ External Services:
 
 #### 4.2.1 Frontend (Next.js)
 - **Audio Capture**: Use MediaRecorder API to capture microphone audio
-- **WebRTC Client**: Establish peer connection with backend
+- **WebRTC Client**: Establish peer connection with OpenAI Realtime API
 - **Audio Playback**: Play received audio using Web Audio API
 - **UI Rendering**: Display microphone button, transcript, status
-- **WebSocket Client**: Handle signaling for WebRTC setup
+- **HTTP Client**: Handle WebRTC signaling and function calls via REST API
 - **State Management**: Manage session state, transcript, status
 
 #### 4.2.2 Backend (FastAPI)
-- **WebSocket Signaling Server**: Handle WebRTC offer/answer/ICE exchange
-- **WebRTC Peer Connection**: Manage peer connection with client
-- **Audio Routing**: Forward audio between client and OpenAI API
-- **OpenAI Gateway**: Maintain WebSocket connection to OpenAI Realtime API
-- **Event Processing**: Handle transcription and response events
-- **Function Call Execution**: Execute RAG function calls from OpenAI Realtime API
-- **Session Management**: Track active sessions (in-memory)
+- **REST API Signaling Endpoints**: Handle SDP exchange for WebRTC setup
+- **OpenAI Gateway**: Forward SDP to OpenAI Realtime API
+- **Function Call Execution**: Execute RAG function calls via REST endpoint
+- **Stateless Coordination**: No persistent connections or session storage
 
 #### 4.2.3 RAG Service (FastAPI)
 - **Document Ingestion**: Parse and chunk documents
@@ -351,39 +343,43 @@ External Services:
    ↓
 2. Frontend requests microphone access
    ↓
-3. Frontend establishes WebRTC connection to OpenAI Realtime API
+3. Frontend → Backend: POST /api/realtime/session with SDP offer
    ↓
-4. Frontend establishes WebSocket connection to backend for function execution
+4. Backend → OpenAI API: Forward SDP to establish WebRTC session
    ↓
-5. User speaks → Frontend captures audio
+5. Backend → Frontend: Return SDP answer
    ↓
-6. Frontend → WebRTC Data Channel → OpenAI Realtime API: Audio stream
+6. Frontend establishes WebRTC connection to OpenAI Realtime API
    ↓
-7. OpenAI API transcribes audio → Transcription event
+7. User speaks → Frontend captures audio
    ↓
-8. Model analyzes query and decides to call rag_knowledge function
+8. Frontend → WebRTC Data Channel → OpenAI Realtime API: Audio stream
    ↓
-9. OpenAI API → Frontend: Function call event (conversation.item.completed)
+9. OpenAI API transcribes audio → Transcription event
    ↓
-10. Frontend → Backend WebSocket: Function call request with query
+10. Model analyzes query and decides to call rag_knowledge function
     ↓
-11. Backend → RAG Service: HTTP POST with query text
+11. OpenAI API → Frontend: Function call event (via WebRTC data channel)
     ↓
-12. RAG Service → OpenAI Embeddings API: Generate query embedding
+12. Frontend → Backend: POST /api/rag/function-call with query
     ↓
-13. RAG Service → ChromaDB: Vector similarity search
+13. Backend → RAG Service: HTTP POST with query text
     ↓
-14. RAG Service → Backend: Return retrieved context
+14. RAG Service → OpenAI Embeddings API: Generate query embedding
     ↓
-15. Backend → Frontend WebSocket: Function call result with context
+15. RAG Service → ChromaDB: Vector similarity search
     ↓
-16. Frontend → OpenAI Realtime API: Function call output via data channel
+16. RAG Service → Backend: Return retrieved context
     ↓
-17. OpenAI API generates response using function result context
+17. Backend → Frontend: HTTP response with function result context
     ↓
-18. OpenAI API → Frontend: Response audio stream via WebRTC
+18. Frontend → OpenAI Realtime API: Function call output via data channel
     ↓
-19. Frontend: Play audio and display transcript
+19. OpenAI API generates response using function result context
+    ↓
+20. OpenAI API → Frontend: Response audio stream via WebRTC
+    ↓
+21. Frontend: Play audio and display transcript
 ```
 
 #### 4.3.2 Document Ingestion Flow
@@ -418,7 +414,7 @@ External Services:
 
 #### FR-POC-2: Audio Capture and Transmission
 - **FR-POC-2.1**: System captures audio from user's microphone
-- **FR-POC-2.2**: System streams audio to backend via WebRTC
+- **FR-POC-2.2**: System streams audio to OpenAI Realtime API via WebRTC
 - **FR-POC-2.3**: System displays audio input level indicator (optional)
 - **FR-POC-2.4**: System detects end-of-speech (silence detection or manual stop)
 
@@ -475,41 +471,25 @@ External Services:
 
 #### 6.1.1 Signaling Protocol
 
-**WebSocket Messages:**
+**REST API Endpoints:**
 
 ```typescript
-// Client → Server: Request session
-{
-  "type": "session_request",
-  "session_id": "optional-uuid"
-}
+// Client → Server: POST /api/realtime/session
+// Request body (Content-Type: application/sdp):
+<SDP offer string>
 
-// Server → Client: WebRTC offer
-{
-  "type": "offer",
-  "sdp": "...",
-  "session_id": "uuid"
-}
+// Query parameters:
+// ?model=gpt-4o-realtime-preview-2024-12-17&voice=alloy
 
-// Client → Server: WebRTC answer
-{
-  "type": "answer",
-  "sdp": "...",
-  "session_id": "uuid"
-}
+// Response:
+// Status: 200 OK
+// Headers:
+//   X-Session-Config: { "session_id": "uuid", "model": "...", "voice": "..." }
+// Body (application/sdp):
+<SDP answer string>
 
-// Client ↔ Server: ICE candidates
-{
-  "type": "ice_candidate",
-  "candidate": "...",
-  "session_id": "uuid"
-}
-
-// Server → Client: Session ready
-{
-  "type": "session_ready",
-  "session_id": "uuid"
-}
+// WebRTC connection is established directly between client and OpenAI
+// No ICE candidate exchange needed (handled by OpenAI)
 ```
 
 #### 6.1.2 STUN/TURN Configuration
@@ -530,51 +510,65 @@ External Services:
 - **Channels**: Mono
 - **Packetization**: 20ms packets
 
-#### 6.1.4 Peer Connection Setup (Backend)
+#### 6.1.4 SDP Exchange (Backend)
 
 ```python
-# FastAPI WebSocket endpoint for signaling
-@app.websocket("/ws/signaling")
-async def websocket_signaling(websocket: WebSocket):
-    await websocket.accept()
-    
-    # Create RTCPeerConnection
-    pc = RTCPeerConnection()
-    
-    # Handle incoming audio stream
-    @pc.on("track")
-    def on_track(track):
-        if track.kind == "audio":
-            # Forward to OpenAI Realtime API
-            forward_audio_to_openai(track)
-    
-    # Handle WebRTC signaling messages
-    while True:
-        message = await websocket.receive_json()
-        # Process offer/answer/ICE candidates
+# FastAPI REST endpoint for SDP exchange
+@app.post("/api/realtime/session")
+async def create_realtime_session(
+    request: Request,
+    model: str = "gpt-4o-realtime-preview-2024-12-17",
+    voice: str = "alloy"
+):
+    # Read SDP offer from request body
+    sdp_offer = await request.body()
+    sdp_offer = sdp_offer.decode('utf-8')
+
+    # Validate SDP format
+    is_valid, error = validate_sdp_format(sdp_offer)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error)
+
+    # Forward SDP to OpenAI Realtime API
+    openai_url = f"{OPENAI_REALTIME_URL}?model={model}&voice={voice}"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/sdp"
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(openai_url, content=sdp_offer, headers=headers)
+        sdp_answer = response.text
+
+    # Return SDP answer with session config in header
+    session_id = str(uuid.uuid4())
+    session_config = {"session_id": session_id, "model": model, "voice": voice}
+
+    return Response(
+        content=sdp_answer,
+        media_type="application/sdp",
+        headers={"X-Session-Config": json.dumps(session_config)}
+    )
 ```
 
 ### 6.2 OpenAI Realtime API Integration
 
-#### 6.2.1 WebSocket Connection
+#### 6.2.1 WebRTC Connection to OpenAI
 
-**Endpoint**: `wss://api.openai.com/v1/realtime`
+**Endpoint**: `POST https://api.openai.com/v1/realtime`
 
-**Authentication**: Bearer token in connection header
+**Authentication**: Bearer token in Authorization header
 
 **Connection Setup:**
-```python
-import openai
+The system establishes a WebRTC connection to OpenAI Realtime API:
 
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-# Create session
-session = client.beta.realtime.connect(
-    model="gpt-4o-realtime-preview-2024-10-01",
-    voice="alloy",
-    instructions="You are a helpful voice assistant..."
-)
-```
+1. Client generates SDP offer
+2. Client sends SDP to backend via `POST /api/realtime/session`
+3. Backend forwards SDP to OpenAI with API key
+4. OpenAI returns SDP answer
+5. Backend forwards answer to client
+6. Client completes WebRTC connection with OpenAI directly
+7. Audio streams and events flow via WebRTC data channel
 
 #### 6.2.2 Event Handling
 
@@ -613,50 +607,63 @@ session_config = {
 
 # Frontend handles function call events
 async def handle_function_call(event):
-    if event.type == "conversation.item.completed":
-        item = event.item
-        if item.type == "function_call" and item.name == "rag_knowledge":
-            # Send function call to backend for execution
-            await websocket.send({
-                "type": "function_call",
-                "call_id": item.id,
-                "function_name": item.name,
-                "arguments": item.arguments
+    if event.type == "response.function_call_arguments.done":
+        # Extract function call details
+        call_id = event.call_id
+        function_name = event.name
+        arguments = JSON.parse(event.arguments)
+
+        if (function_name === "rag_knowledge"):
+            # Send function call to backend via REST API
+            const response = await fetch(`${BACKEND_URL}/api/rag/function-call`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    type: "function_call",
+                    call_id: call_id,
+                    function_name: function_name,
+                    arguments: arguments
+                })
             })
-            
+
             # Backend executes RAG query and returns result
-            # Frontend sends result back to OpenAI
+            const result = await response.json()
+
+            # Frontend sends result back to OpenAI via data channel
             await data_channel.send({
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
-                    "call_id": item.id,
-                    "output": json.dumps({"context": context, "sources": sources})
+                    "call_id": call_id,
+                    "output": JSON.stringify(result.data)
                 }
             })
 ```
 
-#### 6.2.3 Audio Stream Forwarding
+#### 6.2.3 Audio Stream Flow
 
-```python
-# Forward WebRTC audio to OpenAI
-async def forward_audio_to_openai(audio_track):
-    async for audio_chunk in audio_track:
-        # Convert to format expected by OpenAI
-        audio_data = process_audio_chunk(audio_chunk)
-        # Send to OpenAI Realtime API
-        session.submit(
-            type="input_audio_buffer.append",
-            audio=audio_data
-        )
+**Note**: Audio streaming happens directly via WebRTC between client and OpenAI.
+Backend does NOT handle audio forwarding. The backend only:
 
-# Forward OpenAI audio to WebRTC
-async def forward_openai_audio_to_client(session, peer_connection):
-    async for event in session:
-        if event.type == "response.audio_transcript.delta":
-            audio_data = event.delta
-            # Send to WebRTC peer connection
-            send_audio_to_peer(peer_connection, audio_data)
+1. Facilitates SDP exchange for WebRTC setup
+2. Executes function calls (RAG queries) via REST API
+
+```typescript
+// Client-side WebRTC audio handling
+const peerConnection = new RTCPeerConnection()
+
+// Add local audio track
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+stream.getTracks().forEach(track => {
+    peerConnection.addTrack(track, stream)
+})
+
+// Receive remote audio from OpenAI
+peerConnection.ontrack = (event) => {
+    const audioElement = new Audio()
+    audioElement.srcObject = event.streams[0]
+    audioElement.play()
+}
 ```
 
 ### 6.3 RAG Pipeline Implementation
@@ -781,53 +788,57 @@ async def handle_function_call(call_id, function_name, arguments):
 // Next.js component/hook
 const useVoiceSession = () => {
   const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
-  const [ws, setWs] = useState<WebSocket | null>(null);
-  
+  const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
+
   const startSession = async () => {
     // Get user media
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    
+
     // Create peer connection
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-      ]
-    });
-    
+    const pc = new RTCPeerConnection();
+
     // Add audio track
     stream.getTracks().forEach(track => {
       pc.addTrack(track, stream);
     });
-    
+
     // Handle incoming audio
     pc.ontrack = (event) => {
       const audioElement = new Audio();
       audioElement.srcObject = event.streams[0];
       audioElement.play();
     };
-    
-    // WebSocket for signaling
-    const websocket = new WebSocket('ws://localhost:8000/ws/signaling');
-    
-    // Handle offer
-    websocket.onmessage = async (event) => {
-      const message = JSON.parse(event.data);
-      if (message.type === 'offer') {
-        await pc.setRemoteDescription(new RTCSessionDescription(message));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        websocket.send(JSON.stringify({
-          type: 'answer',
-          sdp: answer.sdp
-        }));
-      }
+
+    // Create data channel for OpenAI events
+    const dc = pc.createDataChannel('oai-events');
+    dc.onmessage = (event) => {
+      const openaiEvent = JSON.parse(event.data);
+      handleOpenAIEvent(openaiEvent);
     };
-    
+
+    // Create SDP offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Send SDP to backend via REST API
+    const response = await fetch(`${BACKEND_URL}/api/realtime/session?model=gpt-4o-realtime-preview-2024-12-17&voice=alloy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: offer.sdp
+    });
+
+    // Get SDP answer
+    const answerSdp = await response.text();
+    await pc.setRemoteDescription({
+      type: 'answer',
+      sdp: answerSdp
+    });
+
     setPeerConnection(pc);
-    setWs(websocket);
+    setDataChannel(dc);
   };
-  
-  return { startSession, peerConnection };
+
+  return { startSession, peerConnection, dataChannel };
 };
 ```
 
@@ -1015,29 +1026,29 @@ export default function Transcript({ messages }: { messages: Message[] }) {
 ### Phase 2: WebRTC Signaling and Connection (Week 1-2)
 
 **Deliverables:**
-- WebSocket signaling server in backend
+- REST API signaling endpoints in backend
 - WebRTC peer connection establishment
-- Basic audio streaming (client ↔ backend)
+- Basic audio streaming (client ↔ OpenAI via WebRTC)
 
 **Tasks:**
-1. Implement WebSocket server in FastAPI
-2. Implement WebRTC offer/answer exchange
-3. Implement ICE candidate exchange
-4. Test peer connection establishment
-5. Implement basic audio forwarding (echo test)
+1. Implement REST endpoint for SDP exchange in FastAPI
+2. Implement SDP offer/answer forwarding to OpenAI
+3. Test peer connection establishment
+4. Verify direct WebRTC connection (client ↔ OpenAI)
+5. Implement data channel for OpenAI events
 
 ### Phase 3: OpenAI Realtime API Integration (Week 2)
 
 **Deliverables:**
-- OpenAI Realtime API WebSocket connection
-- Audio forwarding (backend ↔ OpenAI)
+- OpenAI Realtime API WebRTC connection
+- Audio streaming directly between client and OpenAI
 - Basic transcription display
 
 **Tasks:**
-1. Set up OpenAI Realtime API connection
-2. Forward audio from WebRTC to OpenAI
-3. Forward audio from OpenAI to WebRTC
-4. Handle transcription events
+1. Set up WebRTC connection to OpenAI Realtime API
+2. Handle audio streaming via WebRTC (no backend forwarding)
+3. Implement data channel event handling
+4. Handle transcription events from data channel
 5. Display transcription in UI
 
 ### Phase 4: RAG Pipeline Implementation (Week 2-3)
@@ -1142,8 +1153,7 @@ rag-based-voice-assistant-poc/
 │   │   └── openai.ts
 │   ├── utils/                  # Utility functions
 │   │   ├── functionCalls.ts
-│   │   ├── webrtc.ts
-│   │   └── websocket.ts
+│   │   └── webrtc.ts
 │   ├── package.json
 │   └── next.config.js
 │
@@ -1153,7 +1163,7 @@ rag-based-voice-assistant-poc/
 │   │   ├── config.py           # Configuration
 │   │   ├── routes/
 │   │   │   ├── realtime.py     # SDP forwarding endpoint
-│   │   │   └── events.py       # WebSocket for function calls
+│   │   │   └── rag.py          # REST API for function calls
 │   │   ├── services/
 │   │   │   └── rag_client.py   # RAG service HTTP client
 │   │   ├── constants/          # Backend constants
@@ -1199,7 +1209,6 @@ OPENAI_API_KEY=sk-...
 
 # Frontend
 NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-NEXT_PUBLIC_WS_URL=ws://localhost:8000
 ```
 
 ### 10.3 Key Dependencies
@@ -1225,7 +1234,6 @@ NEXT_PUBLIC_WS_URL=ws://localhost:8000
 ```
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-websockets==12.0
 openai==1.3.0
 httpx==0.25.0
 python-dotenv==1.0.0
@@ -1291,7 +1299,6 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
@@ -1304,7 +1311,7 @@ volumes:
 
 #### Backend Endpoints
 - `POST /api/realtime/session` - Create OpenAI Realtime session (SDP forwarding)
-- `WebSocket /api/ws/events/{session_id}` - RAG function call execution
+- `POST /api/rag/function-call` - RAG function call execution via REST API
 - `GET /health` - Health check
 
 #### RAG Service Endpoints

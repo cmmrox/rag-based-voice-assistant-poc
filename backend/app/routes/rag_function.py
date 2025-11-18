@@ -36,9 +36,8 @@ async def execute_rag_function(request: FunctionCallRequest):
     """
     REST API endpoint for executing RAG function calls.
 
-    Replaces the WebSocket-based function call execution with a synchronous
-    REST API approach. This endpoint receives function call requests from
-    the frontend, queries the RAG service, and returns results.
+    This endpoint receives function call requests from the frontend,
+    queries the RAG service, and returns results.
 
     Args:
         request: FunctionCallRequest containing call_id, function_name, and arguments

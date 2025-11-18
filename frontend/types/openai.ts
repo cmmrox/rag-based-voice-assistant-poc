@@ -1,6 +1,6 @@
 /**
  * TypeScript type definitions for OpenAI Realtime API events and responses
- * These types provide type safety for WebSocket communication with OpenAI
+ * These types provide type safety for WebRTC data channel communication with OpenAI
  */
 
 /**

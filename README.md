@@ -18,7 +18,7 @@ This POC demonstrates a production-ready voice assistant that combines:
 │             │         │              │         │             │
 │  Frontend   │◄───────►│   Backend    │◄───────►│ RAG Service │
 │  (Next.js)  │  HTTP   │   (FastAPI)  │  HTTP   │  (FastAPI)  │
-│             │  +WS    │              │         │             │
+│             │  REST   │              │         │             │
 └──────┬──────┘         └───────┬──────┘         └──────┬──────┘
        │                        │                       │
        │ WebRTC                 │ HTTPS                 │
@@ -62,13 +62,13 @@ This POC demonstrates a production-ready voice assistant that combines:
 - **Framework**: Next.js 14.0.0 (App Router)
 - **Language**: TypeScript 5.0.0
 - **UI**: React 18.2.0, Tailwind CSS 3.3.0
-- **Real-time**: WebRTC (native browser API), WebSocket
+- **Real-time**: WebRTC (native browser API), REST API
 
 ### Backend
 - **Framework**: FastAPI 0.104.1
 - **Language**: Python 3.11+
 - **HTTP Client**: httpx 0.25.0
-- **WebSocket**: FastAPI native
+- **API**: REST API endpoints
 
 ### RAG Service
 - **Framework**: FastAPI 0.104.1
@@ -210,13 +210,13 @@ rag-based-voice-assistant-poc/
 1. User asks question requiring knowledge base
 2. OpenAI model decides to call `rag_knowledge` function
 3. Function call sent via WebRTC data channel to frontend
-4. Frontend forwards function call to backend via WebSocket
+4. Frontend sends REST API request to backend (`POST /api/rag/function-call`)
 5. Backend receives function call, forwards to RAG service via HTTP
 6. RAG service:
    - Generates embedding for query
    - Searches ChromaDB for similar documents
    - Returns relevant context
-7. Backend sends context back to frontend via WebSocket
+7. Backend sends context back to frontend as REST API response
 8. Frontend sends function result to OpenAI via data channel
 9. Model formulates answer using retrieved knowledge
 10. Answer spoken to user
@@ -225,7 +225,7 @@ rag-based-voice-assistant-poc/
 
 ### Backend API
 - **POST /api/realtime/session** - Create OpenAI Realtime session (SDP exchange)
-- **WebSocket /api/ws/events/{session_id}** - Function call execution and results
+- **POST /api/rag/function-call** - Execute RAG function calls and return results
 - **GET /health** - Health check endpoint
 
 ### RAG Service API
@@ -306,11 +306,12 @@ isort app/
 
 ### Function calling not working
 - Verify WebRTC connection to OpenAI is established (check browser console for data channel)
-- Verify WebSocket connection to backend `/api/ws/events/{session_id}` is established (check browser console)
+- Verify backend REST API is accessible: `curl -X POST http://localhost:8002/api/rag/function-call`
 - Check backend logs for function call reception
 - Ensure RAG service is accessible from backend (test: `curl http://localhost:8001/health`)
 - Verify documents are ingested in ChromaDB via `/api/documents/ingest`
 - Check that function `rag_knowledge` is registered in session tools configuration
+- Check browser network tab for REST API request/response status
 
 ## Recent Improvements
 

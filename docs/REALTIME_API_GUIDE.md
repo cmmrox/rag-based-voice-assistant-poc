@@ -242,8 +242,9 @@ export const RAG_KNOWLEDGE_TOOL = {
 └─────────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 5. Frontend sends to Backend via WebSocket                         │
-│    Message: { type: "function_call", call_id, function_name, args }│
+│ 5. Frontend sends to Backend via REST API POST                     │
+│    Endpoint: POST /api/rag/function-call                            │
+│    Body: { type: "function_call", call_id, function_name, args }   │
 └─────────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -258,8 +259,8 @@ export const RAG_KNOWLEDGE_TOOL = {
 └─────────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 8. Backend sends results back to Frontend via WebSocket            │
-│    Message: { type: "function_call_result", call_id, result }      │
+│ 8. Backend returns results in HTTP response                        │
+│    Response: { type: "function_call_result", call_id, result }     │
 └─────────────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -323,7 +324,7 @@ const handleFunctionCall = useCallback((eventData: any) => {
 5. `conversation.item.completed` ← Fallback
 6. `conversation.updated` ← Last resort
 
-### Step 5: Call ID Extraction & WebSocket Forwarding
+### Step 5: Call ID Extraction & REST API Call
 
 **Location:** `frontend/utils/functionCalls.ts:68-85`
 
@@ -341,57 +342,66 @@ export function extractCallId(functionCall: any): string | null {
 }
 ```
 
-**Location:** `frontend/utils/websocket.ts:27-46`
+**Location:** `frontend/hooks/useVoiceSession.ts` (function call execution)
 
 ```typescript
-export function sendFunctionCallToBackend(
-  websocket: WebSocket,
+async function sendFunctionCallToBackend(
   callId: string,
   functionName: string,
   args: Record<string, any>
-): void {
-  websocket.send(JSON.stringify({
-    type: 'function_call',
-    call_id: callId,
-    function_name: functionName,
-    arguments: args,
-  }));
+): Promise<any> {
+  const response = await fetch(`${BACKEND_URL}/api/rag/function-call`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      type: 'function_call',
+      call_id: callId,
+      function_name: functionName,
+      arguments: args,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Function call failed: ${response.statusText}`);
+  }
+
+  return await response.json();
 }
 ```
 
 ### Step 6-8: Backend Processing
 
-**Location:** `backend/app/routes/events.py:72-131`
+**Location:** `backend/app/routes/rag.py`
 
 ```python
-@router.websocket("/ws/events/{session_id}")
-async def websocket_events(websocket: WebSocket, session_id: str):
-    while True:
-        data = await websocket.receive_text()
-        message = json.loads(data)
+@router.post("/api/rag/function-call")
+async def execute_function_call(request: Request):
+    # Parse request body
+    body = await request.json()
 
-        if message_type == "function_call":
-            call_id = message.get("call_id")
-            function_name = message.get("function_name")
-            arguments = message.get("arguments", {})
+    call_id = body.get("call_id")
+    function_name = body.get("function_name")
+    arguments = body.get("arguments", {})
 
-            if function_name == "rag_knowledge":
-                query = arguments.get("query", "")
+    if function_name == "rag_knowledge":
+        query = arguments.get("query", "")
 
-                # Query RAG service via HTTP
-                rag_result = await rag_client.query(query)
+        # Query RAG service via HTTP
+        rag_result = await rag_client.query(query)
 
-                # Send result back to frontend
-                await connection_manager.send_message(session_id, {
-                    "type": "function_call_result",
-                    "call_id": call_id,
-                    "function_name": function_name,
-                    "result": {
-                        "context": rag_result.get("context", ""),
-                        "sources": rag_result.get("sources", []),
-                        "success": True
-                    }
-                })
+        # Return result in HTTP response
+        return JSONResponse(content={
+            "type": "function_call_result",
+            "call_id": call_id,
+            "function_name": function_name,
+            "result": {
+                "context": rag_result.get("context", ""),
+                "sources": rag_result.get("sources", []),
+                "success": True
+            }
+        })
 ```
 
 **Location:** `backend/app/services/rag_client.py:16-30`
@@ -411,14 +421,25 @@ async def query(self, query_text: str) -> Optional[dict]:
 
 ### Step 9-11: Sending Results to OpenAI
 
-**Location:** `frontend/hooks/useVoiceSession.ts:359-394`
+**Location:** `frontend/hooks/useVoiceSession.ts` (function call execution flow)
 
 ```typescript
-const handleWebSocketMessage = useCallback(async (event: MessageEvent) => {
-  const message = JSON.parse(event.data);
+// After detecting function call in data channel event
+const handleFunctionCall = useCallback(async (callId: string, functionName: string, args: any) => {
+  try {
+    // Send to backend via REST API
+    const response = await fetch(`${BACKEND_URL}/api/rag/function-call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'function_call',
+        call_id: callId,
+        function_name: functionName,
+        arguments: args,
+      }),
+    });
 
-  if (message.type === 'function_call_result') {
-    const { call_id, result } = message;
+    const result = await response.json();
 
     // Clear timeout since we got a response
     if (functionTimeoutRef.current) {
@@ -427,14 +448,17 @@ const handleWebSocketMessage = useCallback(async (event: MessageEvent) => {
 
     if (dataChannelRef.current && dataChannelRef.current.readyState === 'open') {
       // Format result for OpenAI
-      const output = formatRagResult(result);
+      const output = formatRagResult(result.result);
 
       // Send function call output to OpenAI
-      sendFunctionOutput(dataChannelRef.current, call_id, output);
+      sendFunctionOutput(dataChannelRef.current, callId, output);
 
       // Create NEW response to use the function output
       createNewResponse(dataChannelRef.current, FUNCTION_OUTPUT_DELAY_MS);
     }
+  } catch (error) {
+    console.error('[RAG] Function call failed:', error);
+    // Handle error...
   }
 });
 ```
@@ -493,10 +517,10 @@ This application uses **4 different communication protocols** for different purp
 
 | Protocol | Purpose | Endpoints | Direction | When Used |
 |----------|---------|-----------|-----------|-----------|
-| **REST API** | SDP exchange | `POST /api/realtime/session` | Frontend → Backend → OpenAI | Once, during setup |
+| **REST API (SDP)** | SDP exchange | `POST /api/realtime/session` | Frontend → Backend → OpenAI | Once, during setup |
 | **WebRTC Data Channel** | OpenAI events & function calls | `oai-events` channel | Bidirectional (Frontend ↔ OpenAI) | Continuous, for all events |
 | **WebRTC Audio** | Voice streams | RTP over UDP | Bidirectional (Frontend ↔ OpenAI) | Continuous, for voice |
-| **WebSocket** | Function execution | `WS /api/ws/events/{session_id}` | Bidirectional (Frontend ↔ Backend) | On-demand, when function called |
+| **REST API (Function Calls)** | Function execution | `POST /api/rag/function-call` | Request/Response (Frontend → Backend) | On-demand, when function called |
 | **HTTP** | RAG queries | `POST /api/rag/query` | Backend → RAG Service | On-demand, when function called |
 
 ### Protocol Details
@@ -563,26 +587,28 @@ Frontend                              OpenAI
 - Direct peer-to-peer (no server processing)
 - Efficient bandwidth usage
 
-#### WebSocket (Function Execution)
+#### REST API (Function Execution)
 **Purpose:** Backend orchestration for function calls
 
 ```
 Frontend                  Backend                   RAG Service
    |                         |                         |
-   |<====== WebSocket ======>|                         |
    |                         |                         |
-   |--- function_call ------->|                         |
-   |                         |--HTTP POST /api/rag---->|
+   |                         |                         |
+   |--POST /api/rag/-------->|                         |
+   |   function-call         |--HTTP POST /api/rag---->|
    |                         |<--Context + Sources-----|
-   |<-- function_result ------|                         |
+   |<--HTTP Response---------|                         |
+   |   (function result)     |                         |
 ```
 
-**Why WebSocket?**
-- Bidirectional communication
-- Backend needs to process and query RAG service
-- Maintains connection for multiple function calls
-- Async request/response pattern
-- Can handle timeouts and errors
+**Why REST API?**
+- Simple synchronous request/response pattern
+- Stateless backend (no connection management needed)
+- Each function call is independent
+- Easy error handling via HTTP status codes
+- No persistent connection overhead
+- Straightforward timeout handling
 
 #### HTTP (RAG Queries)
 **Purpose:** Service-to-service communication
@@ -603,37 +629,39 @@ Backend                   RAG Service
 - Easy to add authentication/validation
 - Widely supported
 
-### Can You Use REST API Instead of WebSocket?
+### Why REST API for Function Calls?
 
-**For SDP exchange:** ✅ Yes, already using REST
+**For SDP exchange:** ✅ REST API (already using)
 
-**For function calls:** ❌ Not recommended
+**For function calls:** ✅ REST API (synchronous pattern)
 
-Here's why WebSocket is better for function calls:
+Here's why REST API works well for function calls in this architecture:
 
 ```typescript
-// ❌ Bad: Polling with REST API
-setInterval(async () => {
-  const response = await fetch('/api/function-result');
-  const data = await response.json();
-  // Check if result is ready...
-}, 1000); // Poll every second - wastes resources, adds latency
+// ✅ Synchronous REST API pattern
+async function executeFunctionCall(callId: string, args: any) {
+  // Send request and wait for response
+  const response = await fetch(`${BACKEND_URL}/api/rag/function-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ call_id: callId, arguments: args }),
+  });
 
-// ✅ Good: WebSocket push
-websocket.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  if (message.type === 'function_call_result') {
-    // Immediately receive result when ready
-  }
-};
+  // Response arrives synchronously with result
+  const result = await response.json();
+
+  // Immediately send to OpenAI via data channel
+  sendFunctionOutput(dataChannel, callId, result);
+}
 ```
 
-**WebSocket advantages:**
-- Real-time push (no polling)
-- Lower latency
-- Less resource usage
-- Persistent connection (no reconnection overhead)
-- Bidirectional (can send and receive instantly)
+**REST API advantages:**
+- Synchronous request/response (natural for function calls)
+- Stateless backend (no connection management)
+- Standard HTTP error codes
+- No connection overhead
+- Each call is independent
+- Simple timeout handling with fetch AbortSignal
 
 ---
 
@@ -679,9 +707,9 @@ websocket.onmessage = (event) => {
 │                      FUNCTION CALL EXECUTION                        │
 └─────────────────────────────────────────────────────────────────────┘
 
-10. [Frontend sends to backend via WebSocket]
-11. [Backend queries RAG service]
-12. [Frontend receives result via WebSocket]
+10. [Frontend sends to backend via REST API POST]
+11. [Backend queries RAG service and returns response]
+12. [Frontend receives result in REST response]
 13. conversation.item.create (function_call_output)  → Send result
 14. response.create                                  → Request new response
 
@@ -1075,35 +1103,45 @@ function handleFunctionCall(eventData: any) {
 30-second timeout for function execution to prevent hanging sessions.
 
 ```typescript
-// Start timeout when function call sent
-const timeoutId = setTimeout(() => {
-  console.error('[RAG] Function call timeout');
+// Use AbortController for fetch timeout
+const abortController = new AbortController();
+const timeoutId = setTimeout(() => abortController.abort(), 30000);
 
-  // Send error to OpenAI
-  dataChannel.send(JSON.stringify({
-    type: 'conversation.item.create',
-    event_id: crypto.randomUUID(),
-    item: {
-      type: 'function_call_output',
-      call_id: callId,
-      output: JSON.stringify({
-        error: 'Function execution timed out after 30 seconds',
-      }),
-    }
-  }));
+try {
+  // Send function call with timeout
+  const response = await fetch(`${BACKEND_URL}/api/rag/function-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ call_id: callId, arguments: args }),
+    signal: abortController.signal,  // Abort after 30s
+  });
 
-  // Create new response
-  createNewResponse(dataChannel);
-}, 30000);
+  clearTimeout(timeoutId);  // Clear timeout on success
 
-// Clear timeout when result received
-websocket.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  if (message.type === 'function_call_result') {
-    clearTimeout(timeoutId);  // Cancel timeout
-    // ... process result
+  const result = await response.json();
+  // ... process result
+
+} catch (error) {
+  if (error.name === 'AbortError') {
+    console.error('[RAG] Function call timeout');
+
+    // Send error to OpenAI
+    dataChannel.send(JSON.stringify({
+      type: 'conversation.item.create',
+      event_id: crypto.randomUUID(),
+      item: {
+        type: 'function_call_output',
+        call_id: callId,
+        output: JSON.stringify({
+          error: 'Function execution timed out after 30 seconds',
+        }),
+      }
+    }));
+
+    // Create new response
+    createNewResponse(dataChannel);
   }
-};
+}
 ```
 
 ### Common Pitfalls & Solutions
@@ -1235,23 +1273,26 @@ const offer = await peerConnection.createOffer();  // Channel included in SDP
    - OpenAI transcribes → Sends transcription event
    - OpenAI decides to call function → Sends function call event
 
-4. **Function Execution Phase (WebSocket + HTTP)**
+4. **Function Execution Phase (REST API + HTTP)**
    - Frontend detects function call early (`response.function_call_arguments.done`)
-   - Frontend sends to backend via WebSocket
+   - Frontend sends to backend via REST API POST `/api/rag/function-call`
    - Backend queries RAG service via HTTP
-   - Results flow back: RAG → Backend → Frontend
+   - Results flow back synchronously: RAG → Backend → Frontend (HTTP response)
 
 5. **Response Phase (WebRTC Data Channel + Audio)**
-   - Frontend sends function output to OpenAI
+   - Frontend sends function output to OpenAI via data channel
    - Frontend creates new response
    - OpenAI generates answer using context
    - OpenAI speaks answer → Audio received by frontend
 
 **Key Insight:** The architecture cleverly uses each protocol for its strengths:
-- **REST** for simple setup
+- **REST API** for simple setup and function execution
 - **WebRTC Audio** for real-time voice
 - **WebRTC Data Channel** for real-time events
-- **WebSocket** for backend orchestration
 - **HTTP** for service-to-service calls
 
-This creates a low-latency, scalable system where the browser directly communicates with OpenAI for audio/events, while the backend handles secure operations like API key management and function execution.
+This creates a low-latency, scalable system where:
+- Browser directly communicates with OpenAI for audio/events (WebRTC)
+- Backend handles secure operations (API key management, function execution)
+- Stateless REST API for function calls (no connection management overhead)
+- Simple, reliable request/response pattern for function execution

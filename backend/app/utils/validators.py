@@ -90,7 +90,7 @@ def validate_function_call_message(message: Dict[str, Any]) -> Tuple[bool, Optio
     """
     Validate function call message format.
 
-    Checks that a WebSocket message for function calling has all required fields.
+    Checks that a function call request has all required fields.
 
     Args:
         message: Message dictionary to validate

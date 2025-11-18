@@ -9,8 +9,8 @@ to ensure system stability and prevent abuse.
 # SDP messages should typically be under 10KB
 MAX_SDP_SIZE_BYTES = 10 * 1024  # 10KB
 
-# Maximum WebSocket message size in bytes
-# Prevents memory exhaustion from oversized messages
+# Maximum request body size in bytes
+# Prevents memory exhaustion from oversized requests
 MAX_MESSAGE_SIZE_BYTES = 1024 * 1024  # 1MB
 
 # Required SDP fields for validation

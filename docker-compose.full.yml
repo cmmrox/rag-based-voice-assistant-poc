@@ -56,7 +56,6 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_BACKEND_URL=http://localhost:8002
-      - NEXT_PUBLIC_WS_URL=ws://localhost:8002
     volumes:
       - ./frontend:/app
       - /app/node_modules
